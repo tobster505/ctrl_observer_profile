@@ -1,17 +1,9 @@
 {
-  "name": "observer-v2-report",
+  "name": "ctrl-observer-profile-export",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
-  "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start"
-  },
   "dependencies": {
-    "@sparticuz/chromium": "^119.0.2",
-    "next": "14.2.5",
-    "puppeteer-core": "^22.15.0",
-    "react": "18.3.1",
-    "react-dom": "18.3.1"
+    "pdf-lib": "^1.17.1"
   }
 }
