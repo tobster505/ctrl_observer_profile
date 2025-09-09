@@ -14,7 +14,7 @@ export default async function handler(req, res) {
     const data = await readJson(req);
 
     // 1) Load template
-    const tmplPath = path.join(process.cwd(), 'public', 'template.pdf');
+    const tmplPath = path.join(process.cwd(), 'public', 'CTRL_Observer_Assessment_Profile_template_V1.pdf');
     const templateBytes = await fs.readFile(tmplPath);
     const pdf = await PDFDocument.load(templateBytes);
 
