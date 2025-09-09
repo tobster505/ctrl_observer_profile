@@ -1,0 +1,17 @@
+{
+  "name": "perspective-v2-report",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start"
+  },
+  "dependencies": {
+    "@sparticuz/chromium": "^119.0.2",
+    "next": "14.2.5",
+    "puppeteer-core": "^22.15.0",
+    "react": "18.3.1",
+    "react-dom": "18.3.1"
+  }
+}
