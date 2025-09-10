@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Observer PDF Renderer</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <!-- prevent stale payloads while testing -->
+  <meta http-equiv="Cache-Control" content="no-store" />
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; padding: 2rem; line-height: 1.5; }
+    .grid { display: grid; grid-template-columns: 180px 1fr; gap: 0.5rem 1rem; max-width: 900px; }
+    .key { color: #555; }
+    pre { background: #f6f8fa; padding: 1rem; overflow: auto; border-radius: 8px; }
+    img { max-width: 100%; height: auto; border: 1px solid #eee; border-radius: 8px; }
+    .muted { color: #777; font-size: 0.9rem; }
+  </style>
+</head>
+<body>
+  <h1>Observer PDF Renderer</h1>
+  <p class="muted">This page reads a <code>?payload=...</code> param (base64url or JSON) and fills the template.</p>
+
+  <h2>Summary</h2>
+  <div class="grid">
+    <div class="key">Full name</div><div data-id="fullName">—</div>
+    <div class="key">Preferred name</div><div data-id="preferredName">—</div>
+    <div class="key">Date</div><div data-id="dateLbl">—</div>
+    <div class="key">Dominant key</div><div data-id="dom6Key">—</div>
+    <div class="key">Dominant label</div><div data-id="dom6Label">—</div>
+    <div class="key">Pattern</div><div data-id="patternLabel">—</div>
+    <div class="key">Theme pair</div><div data-id="themePairKey">—</div>
+  </div>
+
+  <h2>Spider chart</h2>
+  <img data-id="spiderChart" alt="Spider chart (if provided)" />
+
+  <h2>Debug JSON</h2>
+  <pre data-id="debugJson">No payload yet…</pre>
+
+  <p>
+    <a data-id="download-json" href="#" download>Download payload JSON</a>
+  </p>
+
+  <script defer src="./fill-template.js"></script>
+</body>
+</html>
