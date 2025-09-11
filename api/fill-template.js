@@ -162,7 +162,7 @@ function drawBulleted(page, font, items, spec = {}, opts = {}) {
 /* ───────────────────────── template fetch ───────────────────────── */
 async function fetchTemplate(req, url) {
   const h = (req && req.headers) || {};
-  const host  = S(h.host);                       // use the request host (vercel provides it)
+  const host  = S(h.host);
   const proto = S(h["x-forwarded-proto"], "https");
 
   // You can override with ?tpl=FILENAME.pdf. Default assumes you put the PDF in /public
@@ -200,7 +200,12 @@ const pickCoverName = (data, url) => norm(
 
 const normPathLabel = (raw) => {
   const v = (raw || "").toString().toLowerCase();
-  const map = { perspective:"Perspective", observe:"Observer", observer:"Observer", reflective:"Reflective", reflection:"Reflective", mirrored:"Mirrored", mirror:"Mirrored" };
+  const map = {
+    perspective:"Perspective",
+    observe:"Observer", observer:"Observer",
+    reflective:"Reflective", reflection:"Reflective",
+    mirrored:"Mirrored", mirror:"Mirrored"
+  };
   return map[v] || "Observer";
 };
 
@@ -225,7 +230,7 @@ export default async function handler(req, res) {
 
   const preview = url.searchParams.get("preview") === "1";
 
-  // ── Option B: accept ?data= (preferred) or ?payload= (legacy)
+  // Accept ?data= (preferred) or ?payload= (legacy)
   const rawParam = url.searchParams.get("data") || url.searchParams.get("payload");
   if (!rawParam) { res.statusCode = 400; res.end("Missing ?data or ?payload"); return; }
 
@@ -247,9 +252,10 @@ export default async function handler(req, res) {
     const HelvB = await pdf.embedFont(StandardFonts.HelveticaBold);
 
     const pageCount = pdf.getPageCount();
-    const page1 = pdf.getPage(0);
-    const page6 = pageCount >= 6 ? pdf.getPage(5) : null;
-    const page7 = pageCount >= 7 ? pdf.getPage(6) : null;
+    const page1  = pdf.getPage(0);
+    // MOVES: old p6 → p9, old p7 → p10
+    const page9  = pageCount >= 9  ? pdf.getPage(8)  : null; // dominant + chart + how
+    const page10 = pageCount >= 10 ? pdf.getPage(9)  : null; // patterns + tips/actions
 
     /* ------------------- fixed positions (y from TOP) ------------------- */
     const POS = {
@@ -257,24 +263,35 @@ export default async function handler(req, res) {
       f1: { x: 290, y: 170, w: 400, size: 40, align: "left" },   // Path name
       n1: { x: 10,  y: 573, w: 500, size: 30, align: "center" }, // Full name
       d1: { x: 130, y: 630, w: 500, size: 20, align: "left" },   // Date
+
+      // Footers (name/path). We’ll draw name (n*) on pages 2–14.
+      // We’ll draw path (f*) ONLY on pages 10–14.
       footer: {
-        f2: { x: 200, y: 64, w: 400, size: 13, align: "left" }, n2: { x: 250, y: 64, w: 400, size: 12, align: "center" },
-        f3: { x: 200, y: 64, w: 400, size: 13, align: "left" }, n3: { x: 250, y: 64, w: 400, size: 12, align: "center" },
-        f4: { x: 200, y: 64, w: 400, size: 13, align: "left" }, n4: { x: 250, y: 64, w: 400, size: 12, align: "center" },
-        f5: { x: 200, y: 64, w: 400, size: 13, align: "left" }, n5: { x: 250, y: 64, w: 400, size: 12, align: "center" },
-        f6: { x: 200, y: 64, w: 400, size: 13, align: "left" }, n6: { x: 250, y: 64, w: 400, size: 12, align: "center" },
-        f7: { x: 200, y: 64, w: 400, size: 13, align: "left" }, n7: { x: 250, y: 64, w: 400, size: 12, align: "center" },
-        f8: { x: 200, y: 64, w: 400, size: 13, align: "left" }, n8: { x: 250, y: 64, w: 400, size: 12, align: "center" },
-        f9: { x: 200, y: 64, w: 400, size: 13, align: "left" }, n9: { x: 250, y: 64, w: 400, size: 12, align: "center" },
+        // Defaults copied across; tune with &f{p}x= / &n{p}x= etc.
+        f2:  { x: 200, y: 64, w: 400, size: 13, align: "left" }, n2:  { x: 250, y: 64, w: 400, size: 12, align: "center" },
+        f3:  { x: 200, y: 64, w: 400, size: 13, align: "left" }, n3:  { x: 250, y: 64, w: 400, size: 12, align: "center" },
+        f4:  { x: 200, y: 64, w: 400, size: 13, align: "left" }, n4:  { x: 250, y: 64, w: 400, size: 12, align: "center" },
+        f5:  { x: 200, y: 64, w: 400, size: 13, align: "left" }, n5:  { x: 250, y: 64, w: 400, size: 12, align: "center" },
+        f6:  { x: 200, y: 64, w: 400, size: 13, align: "left" }, n6:  { x: 250, y: 64, w: 400, size: 12, align: "center" },
+        f7:  { x: 200, y: 64, w: 400, size: 13, align: "left" }, n7:  { x: 250, y: 64, w: 400, size: 12, align: "center" },
+        f8:  { x: 200, y: 64, w: 400, size: 13, align: "left" }, n8:  { x: 250, y: 64, w: 400, size: 12, align: "center" },
+        f9:  { x: 200, y: 64, w: 400, size: 13, align: "left" }, n9:  { x: 250, y: 64, w: 400, size: 12, align: "center" },
+        f10: { x: 200, y: 64, w: 400, size: 13, align: "left" }, n10: { x: 250, y: 64, w: 400, size: 12, align: "center" },
+        f11: { x: 200, y: 64, w: 400, size: 13, align: "left" }, n11: { x: 250, y: 64, w: 400, size: 12, align: "center" },
+        f12: { x: 200, y: 64, w: 400, size: 13, align: "left" }, n12: { x: 250, y: 64, w: 400, size: 12, align: "center" },
+        f13: { x: 200, y: 64, w: 400, size: 13, align: "left" }, n13: { x: 250, y: 64, w: 400, size: 12, align: "center" },
+        f14: { x: 200, y: 64, w: 400, size: 13, align: "left" }, n14: { x: 250, y: 64, w: 400, size: 12, align: "center" },
       },
 
-      // Page 6 (dominant + chart + how paragraph)
+      // ── (Moved) Page 9 — dominant + chart + how paragraph
+      // Keep existing tuning keys (dom6*, how6*, c6*) to avoid breaking URLs
       dom6:     { x: 55,  y: 280, w: 900, size: 33, align: "left" },
       dom6desc: { x: 25,  y: 360, w: 265, size: 15, align: "left", max: 8 },
       how6:     { x: 30,  y: 600, w: 660, size: 17, align: "left", max: 12 },
       chart6:   { x: 213, y: 250, w: 410, h: 230 },
 
-      // Page 7 (patterns + tips/actions)
+      // ── (Moved) Page 10 — patterns + tips/actions
+      // Keep existing tuning keys (p7*) to avoid breaking URLs
       p7Patterns:  { x: 30,  y: 175, w: 660, hSize: 7,  bSize: 16, align:"left", titleGap: 10, blockGap: 20, maxBodyLines: 20 },
       p7ThemePara: { x: 140, y: 380, w: 650, size: 7,  align:"justify", maxLines: 10 }, // optional
       p7Tips:      { x: 30,  y: 530, w: 300, size: 17, align: "left", maxLines: 12 },
@@ -290,17 +307,21 @@ export default async function handler(req, res) {
     POS.f1 = tuneBox(POS.f1, "f1");
     POS.n1 = tuneBox(POS.n1, "n1");
     POS.d1 = tuneBox(POS.d1, "d1");
-    for (let i=2;i<=9;i++){
+
+    // Allow footer tuning for pages 2–14
+    for (let i=2;i<=14;i++){
       const f=`f${i}`, n=`n${i}`;
       POS.footer[f] = tuneBox(POS.footer[f], f);
       POS.footer[n] = tuneBox(POS.footer[n], n);
     }
-    // p6
+
+    // p9 (using dom6* keys for compatibility)
     POS.dom6     = tuneBox(POS.dom6, "dom6");
     POS.dom6desc = tuneBox(POS.dom6desc, "dom6desc"); POS.dom6desc.max = qnum(url,"dom6descmax",POS.dom6desc.max);
     POS.how6     = tuneBox(POS.how6,"how6");          POS.how6.max     = qnum(url,"how6max",POS.how6.max);
     POS.chart6 = { x: qnum(url,"c6x",POS.chart6.x), y: qnum(url,"c6y",POS.chart6.y), w: qnum(url,"c6w",POS.chart6.w), h: qnum(url,"c6h",POS.chart6.h) };
-    // p7
+
+    // p10 (using p7* keys for compatibility)
     POS.p7Patterns = {
       ...POS.p7Patterns,
       x: qnum(url,"p7px",POS.p7Patterns.x), y: qnum(url,"p7py",POS.p7Patterns.y),
@@ -345,34 +366,40 @@ export default async function handler(req, res) {
     const pathName  = norm(normPathLabel(flowRaw));
     const dateLbl   = norm(data?.dateLbl || todayLbl());
 
-    const drawFooter = (page, fSpec, nSpec) => {
+    const drawPath = (page, fSpec) => {
       drawTextBox(page, Helv, pathName, { ...fSpec, color: rgb(0.24,0.23,0.35) }, { maxLines: 1, ellipsis: true });
+    };
+    const drawName = (page, nSpec) => {
       drawTextBox(page, Helv, fullName, { ...nSpec, color: rgb(0.24,0.23,0.35) }, { maxLines: 1, ellipsis: true });
     };
 
+    // Page 1 (adjustable)
     drawTextBox(page1, HelvB, pathName, { ...POS.f1, color: rgb(0.12,0.11,0.2) }, { maxLines: 1, ellipsis: true });
     drawTextBox(page1, HelvB, fullName, { ...POS.n1, color: rgb(0.12,0.11,0.2) }, { maxLines: 1, ellipsis: true });
     drawTextBox(page1, Helv,  dateLbl,  { ...POS.d1, color: rgb(0.24,0.23,0.35) }, { maxLines: 1, ellipsis: true });
 
-    // footers for subsequent pages (if template has them)
-    for (let p = 2; p <= Math.min(9, pageCount); p++) {
+    // Footers: show FullName on pages 2–14; PathName only on pages 10–14
+    for (let p = 2; p <= Math.min(14, pageCount); p++) {
       const page = pdf.getPage(p - 1);
       const fKey = `f${p}`; const nKey = `n${p}`;
-      if (POS.footer[fKey] && POS.footer[nKey]) drawFooter(page, POS.footer[fKey], POS.footer[nKey]);
+      // Always name (if tuned positions exist)
+      if (POS.footer[nKey]) drawName(page, POS.footer[nKey]);
+      // Only pages 10–14 show path label
+      if (p >= 10 && POS.footer[fKey]) drawPath(page, POS.footer[fKey]);
     }
 
-    /* ---------------------------- PAGE 6 ---------------------------- */
-    if (page6) {
+    /* ---------------------------- (MOVED) PAGE 9 ---------------------------- */
+    if (page9) {
       const domLabel = norm(data?.dom6Label || data?.dom6 || "");
       const domDesc  = norm(data?.dominantDesc || data?.dom6Desc || "");
       const how6Text = norm(data?.how6 || data?.how6Text || data?.chartParagraph || "");
 
       if (domLabel) {
-        drawTextBox(page6, HelvB, domLabel, { ...POS.dom6, color: rgb(0.12,0.11,0.2) }, { maxLines: 1, ellipsis: true });
+        drawTextBox(page9, HelvB, domLabel, { ...POS.dom6, color: rgb(0.12,0.11,0.2) }, { maxLines: 1, ellipsis: true });
       }
       if (domDesc) {
         drawTextBox(
-          page6,
+          page9,
           Helv,
           domDesc,
           { ...POS.dom6desc, color: rgb(0.24,0.23,0.35), align: POS.dom6desc.align },
@@ -383,13 +410,13 @@ export default async function handler(req, res) {
       // Auto-fit HOW block
       const DEFAULT_LINE_GAP = 3;
       const howLineHeight = (POS.how6?.size ?? 12) + (POS.how6?.lineGap ?? DEFAULT_LINE_GAP);
-      const howAvailable  = page6.getHeight() - (POS.how6?.y ?? 0);
+      const howAvailable  = page9.getHeight() - (POS.how6?.y ?? 0);
       const howFitLines   = Math.max(1, Math.floor(howAvailable / howLineHeight));
       const howMaxLines   = Math.min((POS.how6?.max ?? 12), howFitLines);
 
       if (how6Text) {
         drawTextBox(
-          page6,
+          page9,
           Helv,
           how6Text,
           { ...POS.how6, color: rgb(0.24,0.23,0.35), align: POS.how6.align },
@@ -405,15 +432,15 @@ export default async function handler(req, res) {
           if (r.ok) {
             const png = await pdf.embedPng(await r.arrayBuffer());
             const { x, y, w, h } = POS.chart6;
-            const ph = page6.getHeight();
-            page6.drawImage(png, { x, y: ph - y - h, width: w, height: h });
+            const ph = page9.getHeight();
+            page9.drawImage(png, { x, y: ph - y - h, width: w, height: h });
           }
         } catch { /* ignore image failure */ }
       }
     }
 
-    /* ---------------------------- PAGE 7 ---------------------------- */
-    if (page7) {
+    /* ---------------------------- (MOVED) PAGE 10 ---------------------------- */
+    if (page10) {
       // Left column pattern/theme bodies
       const blocksSrc = Array.isArray(data?.page7Blocks) ? data.page7Blocks
                       : Array.isArray(data?.p7Blocks)     ? data.p7Blocks
@@ -427,7 +454,7 @@ export default async function handler(req, res) {
       for (const b of blocks) {
         if (b.body) {
           const r = drawTextBox(
-            page7,
+            page10,
             Helv,
             b.body,
             { x: POS.p7Patterns.x, y: curY, w: POS.p7Patterns.w, size: POS.p7Patterns.bSize, align: POS.p7Patterns.align, color: rgb(0.24,0.23,0.35) },
@@ -486,13 +513,11 @@ export default async function handler(req, res) {
       const bulletSpecActs = { ...POS.p7Acts, indent: bulletIndent, gap: bulletGap, bulletRadius: 1.8, align: POS.p7Acts.align, color: rgb(0.24,0.23,0.35) };
 
       if (taCols === 2) {
-        // two columns
-        drawBulleted(page7, Helv, tips,    bulletSpecTips, { maxLines: POS.p7Tips.maxLines,  blockGap: 6 });
-        drawBulleted(page7, Helv, actions, bulletSpecActs, { maxLines: POS.p7Acts.maxLines,  blockGap: 6 });
+        drawBulleted(page10, Helv, tips,    bulletSpecTips, { maxLines: POS.p7Tips.maxLines,  blockGap: 6 });
+        drawBulleted(page10, Helv, actions, bulletSpecActs, { maxLines: POS.p7Acts.maxLines,  blockGap: 6 });
       } else {
-        // stacked
-        drawBulleted(page7, Helv, tips,    bulletSpecTips, { maxLines: POS.p7Tips.maxLines,  blockGap: 6 });
-        drawBulleted(page7, Helv, actions, bulletSpecActs, { maxLines: POS.p7Acts.maxLines,  blockGap: 6 });
+        drawBulleted(page10, Helv, tips,    bulletSpecTips, { maxLines: POS.p7Tips.maxLines,  blockGap: 6 });
+        drawBulleted(page10, Helv, actions, bulletSpecActs, { maxLines: POS.p7Acts.maxLines,  blockGap: 6 });
       }
     }
 
