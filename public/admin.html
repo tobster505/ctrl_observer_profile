@@ -1,0 +1,53 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>CTRL Observer · Admin PDF</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; padding: 24px; max-width: 820px; margin: auto; }
+    textarea { width: 100%; height: 280px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .row { display: flex; gap: 12px; margin: 12px 0; }
+    input[type=text]{ flex: 1; padding: 8px; }
+    button { padding: 10px 16px; }
+    small { color: #666; }
+  </style>
+</head>
+<body>
+  <h1>CTRL Observer · Admin PDF</h1>
+  <p>Paste a payload JSON from Botpress (the same object you’d send to the renderer), then click Download PDF.</p>
+
+  <div class="row">
+    <input id="name" type="text" placeholder="Optional file name (e.g., CTRL_Alex_12SEPT2025.pdf)" />
+    <input id="tpl" type="text" placeholder="Optional template filename (must exist in /public)" />
+  </div>
+
+  <textarea id="json" placeholder='{"flow":"Observer","dateLbl":"12 Sep 2025","person":{"fullName":"Alex Example"},"dom6Label":"Regulated", "dominantDesc":"...", "how6":"...", "page7Blocks":[{"body":"..."},{"body":"..."}], "tips2":["..."], "actions2":["..."]}'></textarea>
+
+  <div class="row">
+    <button id="dl">Download PDF</button>
+    <small>Opens <code>/api/fill-template?data=...</code> in a new tab.</small>
+  </div>
+
+  <script>
+    function b64(s){ return btoa(unescape(encodeURIComponent(s))); }
+    document.getElementById('dl').onclick = () => {
+      const raw = document.getElementById('json').value.trim();
+      if (!raw) { alert('Please paste JSON payload.'); return; }
+      try {
+        JSON.parse(raw); // validate
+      } catch (e) { alert('Invalid JSON: ' + e.message); return; }
+
+      const name = encodeURIComponent(document.getElementById('name').value.trim());
+      const tpl  = encodeURIComponent(document.getElementById('tpl').value.trim());
+      const q = new URLSearchParams();
+      q.set('data', b64(raw));
+      if (name) q.set('name', name);
+      if (tpl)  q.set('tpl', tpl);
+
+      const url = '/api/fill-template?' + q.toString();
+      window.open(url, '_blank', 'noopener');
+    };
+  </script>
+</body>
+</html>
