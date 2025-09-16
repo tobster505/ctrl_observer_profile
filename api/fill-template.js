@@ -160,21 +160,52 @@ function drawBulleted(page, font, items, spec = {}, opts = {}) {
 }
 
 /* ───────────────────────── template fetch ───────────────────────── */
+
+const TPL_DEFAULT =
+  process.env.PDF_TEMPLATE ||
+  "CTRL_Observer_Assessment_Profile_template_v1.pdf";
+
+/**
+ * Returns the PDF template bytes.
+ * Priority:
+ *  1) ?tpl= (absolute https://… or file name under /public)
+ *  2) env PDF_TEMPLATE
+ *  3) CTRL_Observer_Assessment_Profile_template_v1.pdf
+ *  4) pdf_template.pdf (legacy fallback)
+ */
 async function fetchTemplate(req, url) {
   const h = (req && req.headers) || {};
   const host  = S(h.host);
   const proto = S(h["x-forwarded-proto"], "https");
 
-  // You can override with ?tpl=FILENAME.pdf. Default assumes you put the PDF in /public
-  const tplParam = url?.searchParams?.get("tpl");
-  const filename = tplParam && tplParam.trim()
-    ? tplParam.trim()
-    : "pdf_template.pdf";
+  const tplParam = (url?.searchParams?.get("tpl") || "").trim();
+  const candidateNames = [];
 
-  const full = `${proto}://${host}/${filename}`;
-  const r = await fetch(full);
-  if (!r.ok) throw new Error(`template fetch failed: ${r.status} ${r.statusText}`);
-  return new Uint8Array(await r.arrayBuffer());
+  if (tplParam) {
+    if (/^https?:\/\//i.test(tplParam)) {
+      // Absolute URL override
+      candidateNames.push(tplParam);
+    } else {
+      // File in /public
+      candidateNames.push(`${proto}://${host}/${tplParam}`);
+    }
+  }
+
+  // Defaults under /public
+  candidateNames.push(`${proto}://${host}/${TPL_DEFAULT}`);
+  candidateNames.push(`${proto}://${host}/pdf_template.pdf`); // legacy fallback
+
+  const errors = [];
+  for (const full of candidateNames) {
+    try {
+      const r = await fetch(full);
+      if (r.ok) return new Uint8Array(await r.arrayBuffer());
+      errors.push(`${full} → ${r.status} ${r.statusText}`);
+    } catch (e) {
+      errors.push(`${full} → ${e?.message || e}`);
+    }
+  }
+  throw new Error(`template fetch failed: ${errors.join(" | ")}`);
 }
 
 /* ─────────────────────── query helpers ─────────────────────── */
@@ -267,7 +298,6 @@ export default async function handler(req, res) {
       // Footers (name/path). We’ll draw name (n*) on pages 2–14.
       // We’ll draw path (f*) ONLY on pages 10–14.
       footer: {
-        // Defaults copied across; tune with &f{p}x= / &n{p}x= etc.
         f2:  { x: 200, y: 64, w: 400, size: 13, align: "left" }, n2:  { x: 250, y: 64, w: 400, size: 12, align: "center" },
         f3:  { x: 200, y: 64, w: 400, size: 13, align: "left" }, n3:  { x: 250, y: 64, w: 400, size: 12, align: "center" },
         f4:  { x: 200, y: 64, w: 400, size: 13, align: "left" }, n4:  { x: 250, y: 64, w: 400, size: 12, align: "center" },
@@ -284,14 +314,12 @@ export default async function handler(req, res) {
       },
 
       // ── (Moved) Page 9 — dominant + chart + how paragraph
-      // Keep existing tuning keys (dom6*, how6*, c6*) to avoid breaking URLs
       dom6:     { x: 55,  y: 280, w: 900, size: 33, align: "left" },
       dom6desc: { x: 25,  y: 360, w: 265, size: 15, align: "left", max: 8 },
       how6:     { x: 30,  y: 600, w: 660, size: 17, align: "left", max: 12 },
       chart6:   { x: 213, y: 250, w: 410, h: 230 },
 
       // ── (Moved) Page 10 — patterns + tips/actions
-      // Keep existing tuning keys (p7*) to avoid breaking URLs
       p7Patterns:  { x: 30,  y: 175, w: 660, hSize: 7,  bSize: 16, align:"left", titleGap: 10, blockGap: 20, maxBodyLines: 20 },
       p7ThemePara: { x: 140, y: 380, w: 650, size: 7,  align:"justify", maxLines: 10 }, // optional
       p7Tips:      { x: 30,  y: 530, w: 300, size: 17, align: "left", maxLines: 12 },
@@ -308,20 +336,17 @@ export default async function handler(req, res) {
     POS.n1 = tuneBox(POS.n1, "n1");
     POS.d1 = tuneBox(POS.d1, "d1");
 
-    // Allow footer tuning for pages 2–14
     for (let i=2;i<=14;i++){
       const f=`f${i}`, n=`n${i}`;
       POS.footer[f] = tuneBox(POS.footer[f], f);
       POS.footer[n] = tuneBox(POS.footer[n], n);
     }
 
-    // p9 (using dom6* keys for compatibility)
     POS.dom6     = tuneBox(POS.dom6, "dom6");
     POS.dom6desc = tuneBox(POS.dom6desc, "dom6desc"); POS.dom6desc.max = qnum(url,"dom6descmax",POS.dom6desc.max);
     POS.how6     = tuneBox(POS.how6,"how6");          POS.how6.max     = qnum(url,"how6max",POS.how6.max);
     POS.chart6 = { x: qnum(url,"c6x",POS.chart6.x), y: qnum(url,"c6y",POS.chart6.y), w: qnum(url,"c6w",POS.chart6.w), h: qnum(url,"c6h",POS.chart6.h) };
 
-    // p10 (using p7* keys for compatibility)
     POS.p7Patterns = {
       ...POS.p7Patterns,
       x: qnum(url,"p7px",POS.p7Patterns.x), y: qnum(url,"p7py",POS.p7Patterns.y),
@@ -382,9 +407,7 @@ export default async function handler(req, res) {
     for (let p = 2; p <= Math.min(14, pageCount); p++) {
       const page = pdf.getPage(p - 1);
       const fKey = `f${p}`; const nKey = `n${p}`;
-      // Always name (if tuned positions exist)
       if (POS.footer[nKey]) drawName(page, POS.footer[nKey]);
-      // Only pages 10–14 show path label
       if (p >= 10 && POS.footer[fKey]) drawPath(page, POS.footer[fKey]);
     }
 
@@ -531,6 +554,8 @@ export default async function handler(req, res) {
       "Content-Disposition",
       `${preview ? "inline" : "attachment"}; filename="${fname}"`
     );
+    // Avoid CDN caching oddities during development/tuning
+    res.setHeader("Cache-Control", "no-store");
     res.end(Buffer.from(bytes));
   } catch (e) {
     res.statusCode = 500;
