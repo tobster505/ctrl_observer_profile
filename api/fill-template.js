@@ -93,6 +93,53 @@ function dropLeadingLabel(s) {
   // Removes "P.xxxx = " style labels if present
   return t.replace(/^\s*P\.[A-Za-z0-9_]+\s*=\s*/i, "");
 }
+function safeKeys(o, max = 50) {
+  try { return Object.keys(o || {}).slice(0, max); } catch { return []; }
+}
+function clip(s, n = 220) {
+  const t = String(s || "");
+  return t.length > n ? t.slice(0, n) + "…" : t;
+}
+function firstFoundCtrl12Source(payload) {
+  // Mirrors pickCtrl12Bands() order so we can report *where* it came from.
+  const d = payload || {};
+  const sources = [
+    ["ScoringTruth.PoC_FINAL.ctrl12", d?.ScoringTruth?.PoC_FINAL?.ctrl12],
+    ["scoringTruth.PoC_FINAL.ctrl12", d?.scoringTruth?.PoC_FINAL?.ctrl12],
+    ["PoC_FINAL.ctrl12", d?.PoC_FINAL?.ctrl12],
+
+    ["subject.ScoringTruth.PoC_FINAL.ctrl12", d?.subject?.ScoringTruth?.PoC_FINAL?.ctrl12],
+    ["subject.scoringTruth.PoC_FINAL.ctrl12", d?.subject?.scoringTruth?.PoC_FINAL?.ctrl12],
+    ["subject.PoC_FINAL.ctrl12", d?.subject?.PoC_FINAL?.ctrl12],
+    ["subject.ctrl12", d?.subject?.ctrl12],
+
+    ["self.ScoringTruth.PoC_FINAL.ctrl12", d?.self?.ScoringTruth?.PoC_FINAL?.ctrl12],
+    ["self.PoC_FINAL.ctrl12", d?.self?.PoC_FINAL?.ctrl12],
+    ["self.ctrl12", d?.self?.ctrl12],
+
+    ["target.ScoringTruth.PoC_FINAL.ctrl12", d?.target?.ScoringTruth?.PoC_FINAL?.ctrl12],
+    ["target.PoC_FINAL.ctrl12", d?.target?.PoC_FINAL?.ctrl12],
+    ["target.ctrl12", d?.target?.ctrl12],
+
+    ["JsonSummaryObj.ScoringTruth.PoC_FINAL.ctrl12", d?.JsonSummaryObj?.ScoringTruth?.PoC_FINAL?.ctrl12],
+    ["JsonSummaryObj.PoC_FINAL.ctrl12", d?.JsonSummaryObj?.PoC_FINAL?.ctrl12],
+    ["JsonSummaryObj.ctrl12", d?.JsonSummaryObj?.ctrl12],
+
+    ["raw.JsonSummaryObj.ScoringTruth.PoC_FINAL.ctrl12", d?.raw?.JsonSummaryObj?.ScoringTruth?.PoC_FINAL?.ctrl12],
+    ["raw.PoC_FINAL.ctrl12", d?.raw?.PoC_FINAL?.ctrl12],
+    ["raw.ctrl12", d?.raw?.ctrl12],
+
+    ["ctrl12", d?.ctrl12],
+    ["bands", d?.bands],
+    ["ctrl.bands", d?.ctrl?.bands],
+    ["ctrl.ctrl12", d?.ctrl?.ctrl12],
+  ];
+
+  for (const [path, obj] of sources) {
+    if (isObj(obj) && Object.keys(obj).length > 0) return path;
+  }
+  return "";
+}
 
 /* ───────────────────── spider chart helpers (V2) ───────────────────── */
 /*
@@ -252,18 +299,44 @@ function makeSpiderChartUrl12(ctrl12Bands, opts = {}) {
   return `https://quickchart.io/chart?c=${enc}&format=png&width=${width}&height=${height}&backgroundColor=transparent&version=4`;
 }
 
-async function embedRemoteImage(pdfDoc, page, imgUrl, box) {
-  const r = await fetch(imgUrl);
-  if (!r.ok) throw new Error(`image fetch failed: ${r.status} ${r.statusText}`);
-  const buf = new Uint8Array(await r.arrayBuffer());
+async function embedRemoteImage(pdfDoc, page, imgUrl, box, debugOut) {
+  const dbg = debugOut || null;
 
+  const r = await fetch(imgUrl);
+  if (dbg) {
+    dbg.fetch = {
+      ok: r.ok,
+      status: r.status,
+      statusText: r.statusText,
+      contentType: r.headers?.get?.("content-type") || "",
+    };
+  }
+  if (!r.ok) throw new Error(`image fetch failed: ${r.status} ${r.statusText}`);
+
+  const arr = await r.arrayBuffer();
+  const buf = new Uint8Array(arr);
+
+  if (dbg) dbg.fetch.bytes = buf.length;
+
+  // Try PNG first, then JPG
   let img = null;
-  try { img = await pdfDoc.embedPng(buf); } catch {}
-  if (!img) img = await pdfDoc.embedJpg(buf);
+  let mode = "";
+  try { img = await pdfDoc.embedPng(buf); mode = "png"; } catch (e) {
+    if (dbg) dbg.embedPngError = String(e?.message || e);
+  }
+  if (!img) {
+    try { img = await pdfDoc.embedJpg(buf); mode = "jpg"; } catch (e) {
+      if (dbg) dbg.embedJpgError = String(e?.message || e);
+      throw e;
+    }
+  }
+
+  if (dbg) dbg.embedMode = mode;
 
   const ph = page.getHeight();
   const { x, y, w, h } = box;
 
+  // "contain" so we do not squash charts
   const iw = img.width, ih = img.height;
   const s = Math.min(w / iw, h / ih);
   const dw = iw * s, dh = ih * s;
@@ -271,24 +344,55 @@ async function embedRemoteImage(pdfDoc, page, imgUrl, box) {
   const dy = (ph - y - h) + (h - dh) / 2;
 
   page.drawImage(img, { x: dx, y: dy, width: dw, height: dh });
+
+  if (dbg) {
+    dbg.draw = { box, placed: { x: dx, y: dy, w: dw, h: dh }, pageH: ph };
+  }
   return true;
 }
 
-async function embedRadarFromBandsOrUrl(pdfDoc, page, box, payload, explicitUrl) {
-  // 1) Pull ctrl12 from *any* known payload shape
+
+async function embedRadarFromBandsOrUrl(pdfDoc, page, box, payload, explicitUrl, debugOut) {
+  const dbg = debugOut || null;
+
   const ctrl12 = pickCtrl12Bands(payload);
+  const sourcePath = firstFoundCtrl12Source(payload);
 
-  // 2) Only trust explicitUrl if it is NOT the old radar spider chart
   let url = S(explicitUrl || "", "");
-  if (url && looksLikeOldRadarUrl(url)) url = "";
+  const urlLooksRadar = url && looksLikeOldRadarUrl(url);
 
-  // 3) Prefer building the new polar chart from ctrl12
-  const finalUrl = (ctrl12 ? makeSpiderChartUrl12(ctrl12, { width: 900, height: 900 }) : "") || url;
+  if (url && urlLooksRadar) url = "";
+
+  const generated = ctrl12 ? makeSpiderChartUrl12(ctrl12, { width: 900, height: 900 }) : "";
+  const finalUrl = generated || url;
+
+  if (dbg) {
+    dbg.decision = {
+      explicitUrl: clip(explicitUrl, 300),
+      explicitUrlLooksRadar: !!urlLooksRadar,
+      ctrl12Found: !!ctrl12,
+      ctrl12SourcePath: sourcePath,
+      ctrl12Keys: ctrl12 ? safeKeys(ctrl12, 12) : [],
+      ctrl12Sample: ctrl12 ? {
+        C_low: ctrl12.C_low, C_mid: ctrl12.C_mid, C_high: ctrl12.C_high,
+        T_low: ctrl12.T_low, T_mid: ctrl12.T_mid, T_high: ctrl12.T_high,
+        R_low: ctrl12.R_low, R_mid: ctrl12.R_mid, R_high: ctrl12.R_high,
+        L_low: ctrl12.L_low, L_mid: ctrl12.L_mid, L_high: ctrl12.L_high,
+      } : null,
+      generatedUrlPrefix: clip(generated, 220),
+      finalUrlPrefix: clip(finalUrl, 220),
+      box
+    };
+  }
 
   if (!finalUrl) return false;
-  await embedRemoteImage(pdfDoc, page, finalUrl, box);
+
+  await embedRemoteImage(pdfDoc, page, finalUrl, box, dbg);
+
+  if (dbg) dbg.ok = true;
   return true;
 }
+
 
 
 /* ───────────────────────── template fetch ───────────────────────── */
@@ -330,6 +434,8 @@ export default async function handler(req) {
     } catch (e) {
       return new Response(JSON.stringify({ ok: false, error: "Bad data JSON" }), { status: 400 });
     }
+const debugMode = (u.searchParams.get("debug") === "1");
+const chartDebug = { ok: false };
 
     // Load template
     const pdfBytes = await fetchPdfBytes(tpl);
@@ -405,16 +511,34 @@ export default async function handler(req) {
 
       // Chart image
       // Prefer explicit URL if NOT radar; otherwise regenerate from ctrl12 bands.
-      try {
-        await embedRadarFromBandsOrUrl(
-          pdf,
-          page9,
-          POS.chart6,
-          data,
-          (data?.chartUrl || data?.spiderChartUrl || data?.spider?.chartUrl || "")
-        );
-      } catch { /* ignore image failure */ }
-    }
+try {
+  await embedRadarFromBandsOrUrl(
+    pdf,
+    page9,
+    POS.chart6,
+    data,
+    (data?.chartUrl || data?.spiderChartUrl || data?.spider?.chartUrl || ""),
+    chartDebug
+  );
+} catch (e) {
+  chartDebug.ok = false;
+  chartDebug.error = String(e?.message || e);
+if (debugMode) {
+  return new Response(JSON.stringify({
+    ok: true,
+    where: "fill-template:180:debug",
+    chartDebug,
+    payloadTopKeys: safeKeys(data, 80),
+    hasSpiderUrl: !!(data?.chartUrl || data?.spiderChartUrl || data?.spider?.chartUrl),
+    spiderUrlPrefix: clip((data?.chartUrl || data?.spiderChartUrl || data?.spider?.chartUrl || ""), 220),
+  }, null, 2), {
+    status: 200,
+    headers: { "Content-Type": "application/json", "Cache-Control": "no-store" }
+  });
+}
+
+  // production: ignore
+}
 
     const outBytes = await pdf.save();
     return new Response(outBytes, {
