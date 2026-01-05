@@ -174,6 +174,10 @@ async function resolveTemplateFile(safeCombo) {
   return { found: false, desired, fallback, candidates };
 }
 
+// ───────── load template bytes (FIX: was missing) ─────────
+async function loadTemplateBytes(fullPath) {
+  return await fs.readFile(fullPath);
+}
 
 /* ───────── layout definition (kept aligned to Coach-style structure) ───────── */
 const DEFAULT_LAYOUT = {
@@ -590,7 +594,6 @@ export default async function handler(req, res) {
   } catch (err) {
     console.error("[fill-template:OBSERVER_180] CRASH", err);
 
-    // Add path diagnostics in the error so you can fix it once, not 17 times.
     const candidates = getPublicDirCandidates();
     const inv = [];
     for (const dir of candidates) {
