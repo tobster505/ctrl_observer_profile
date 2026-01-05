@@ -1,10 +1,11 @@
 /**
- * CTRL Observer Export Service · fill-template (OBSERVER 180 V6)
+ * CTRL Observer Export Service · fill-template (OBSERVER 180 V6.2)
  *
- * Fixes:
- * - Correctly locates /public on Vercel (process.cwd()/public, /var/task/public, etc.)
- * - Auto-discovers available templates and falls back safely if combo template missing
- * - Keeps Coach-style endpoint: /api/fill-template?data=<base64 JSON>
+ * V6.2 changes (ONLY):
+ * - DEFAULT_LAYOUT updated to match the Coach V5 coordinate layout,
+ *   converted for this file's bottom-origin drawing logic.
+ *
+ * Base: OBSERVER 180 V6.1 (working)
  */
 
 export const config = { runtime: "nodejs" };
@@ -117,7 +118,6 @@ async function readPayload(req) {
 
 /* ───────── robust /public resolver (Vercel-safe) ───────── */
 function getPublicDirCandidates() {
-  // ESM-friendly __dirname
   const __filename = fileURLToPath(import.meta.url);
   const __dirname = path.dirname(__filename);
 
@@ -125,13 +125,12 @@ function getPublicDirCandidates() {
   const candidates = [
     path.join(cwd, "public"),
     "/var/task/public",
-    "/var/task/.next/server/public", // just in case (usually not used)
+    "/var/task/.next/server/public",
     path.join(__dirname, "..", "public"),
     path.join(__dirname, "..", "..", "public"),
     path.join(__dirname, "..", "..", "..", "public"),
   ];
 
-  // de-dupe
   return Array.from(new Set(candidates));
 }
 
@@ -152,7 +151,6 @@ async function resolveTemplateFile(safeCombo) {
   const desired = `${TEMPLATE_PREFIX}${safeCombo}${TEMPLATE_EXT}`;
   const fallback = `${TEMPLATE_PREFIX}fallback${TEMPLATE_EXT}`;
 
-  // 1) Try exact combo file in each candidate public dir
   for (const pub of candidates) {
     const full = path.join(pub, desired);
     try {
@@ -161,7 +159,6 @@ async function resolveTemplateFile(safeCombo) {
     } catch { /* keep trying */ }
   }
 
-  // 2) If combo missing, try explicit fallback template in each candidate public dir
   for (const pub of candidates) {
     const full = path.join(pub, fallback);
     try {
@@ -170,83 +167,88 @@ async function resolveTemplateFile(safeCombo) {
     } catch { /* keep trying */ }
   }
 
-  // 3) Nothing found: return diagnostics
   return { found: false, desired, fallback, candidates };
 }
 
-// ───────── load template bytes (FIX: was missing) ─────────
+// ───────── template bytes loader (already fixed) ─────────
 async function loadTemplateBytes(fullPath) {
   return await fs.readFile(fullPath);
 }
 
-/* ───────── layout definition (kept aligned to Coach-style structure) ───────── */
+/* ───────── DEFAULT LAYOUT (V6.2) ─────────
+   NOTE: These values are the Coach V5 layout translated for this file’s
+   bottom-origin drawTextBox/page.drawImage usage.
+*/
 const DEFAULT_LAYOUT = {
   pages: {
+    // Page 1
     p1: {
-      name: { x: 70, y: 700, w: 460, h: 22, size: 22, align: "left", maxLines: 1 },
-      date: { x: 70, y: 670, w: 460, h: 16, size: 12, align: "left", maxLines: 1 }
+      name: { x: 60,  y: 324, w: 500, h: 60, size: 30, align: "center", maxLines: 1 },
+      date: { x: 230, y: 189, w: 500, h: 40, size: 25, align: "left",   maxLines: 1 }
     },
-    p2: { hdrName: { x: 70, y: 752, w: 460, h: 14, size: 10, align: "left", maxLines: 1 } },
+
+    // Headers p2–p8
+    p2: { hdrName: { x: 380, y: 767, w: 400, h: 24, size: 13, align: "left", maxLines: 1 } },
     p3: {
-      hdrName: { x: 70, y: 752, w: 460, h: 14, size: 10, align: "left", maxLines: 1 },
+      hdrName: { x: 380, y: 767, w: 400, h: 24, size: 13, align: "left", maxLines: 1 },
       p3Text: {
-        exec1: { x: 70, y: 580, w: 470, h: 110, size: 12, align: "left", maxLines: 12 },
-        exec2: { x: 70, y: 450, w: 470, h: 110, size: 12, align: "left", maxLines: 12 }
+        exec1: { x: 25, y: 232, w: 550, h: 250, size: 14, align: "left", maxLines: 13 },
+        exec2: { x: 25, y: -98, w: 550, h: 420, size: 14, align: "left", maxLines: 22 }
       },
       p3Q: {
-        exec_q1: { x: 70, y: 360, w: 470, h: 30, size: 11, align: "left", maxLines: 2 },
-        exec_q2: { x: 70, y: 320, w: 470, h: 30, size: 11, align: "left", maxLines: 2 },
-        exec_q3: { x: 70, y: 280, w: 470, h: 30, size: 11, align: "left", maxLines: 2 },
-        exec_q4: { x: 70, y: 240, w: 470, h: 30, size: 11, align: "left", maxLines: 2 }
+        exec_q1: { x: 25, y: 172, w: 550, h: 40, size: 14, align: "left", maxLines: 2 },
+        exec_q2: { x: 25, y: 132, w: 550, h: 40, size: 14, align: "left", maxLines: 2 },
+        exec_q3: { x: 25, y:  92, w: 550, h: 40, size: 14, align: "left", maxLines: 2 },
+        exec_q4: { x: 25, y:  52, w: 550, h: 40, size: 14, align: "left", maxLines: 2 }
       }
     },
     p4: {
-      hdrName: { x: 70, y: 752, w: 460, h: 14, size: 10, align: "left", maxLines: 1 },
+      hdrName: { x: 380, y: 767, w: 400, h: 24, size: 13, align: "left", maxLines: 1 },
       p4Text: {
-        ov1: { x: 70, y: 590, w: 470, h: 110, size: 12, align: "left", maxLines: 12 },
-        ov2: { x: 70, y: 460, w: 470, h: 110, size: 12, align: "left", maxLines: 12 },
-        chart: { x: 300, y: 270, w: 240, h: 160 }
+        ov1:   { x: 25,  y: 442, w: 200, h: 240, size: 14, align: "left", maxLines: 25 },
+        ov2:   { x: 25,  y: -98, w: 550, h: 420, size: 14, align: "left", maxLines: 23 },
+        chart: { x: 250, y: 362, w: 320, h: 320 }
       },
       p4Q: {
-        ov_q1: { x: 70, y: 210, w: 470, h: 30, size: 11, align: "left", maxLines: 2 },
-        ov_q2: { x: 70, y: 170, w: 470, h: 30, size: 11, align: "left", maxLines: 2 }
+        ov_q1: { x: 25, y: 152, w: 550, h: 40, size: 14, align: "left", maxLines: 2 },
+        ov_q2: { x: 25, y: 102, w: 550, h: 40, size: 14, align: "left", maxLines: 2 }
       }
     },
     p5: {
-      hdrName: { x: 70, y: 752, w: 460, h: 14, size: 10, align: "left", maxLines: 1 },
+      hdrName: { x: 380, y: 767, w: 400, h: 24, size: 13, align: "left", maxLines: 1 },
       p5Text: {
-        dd1: { x: 70, y: 590, w: 470, h: 110, size: 12, align: "left", maxLines: 12 },
-        dd2: { x: 70, y: 460, w: 470, h: 110, size: 12, align: "left", maxLines: 12 },
-        th1: { x: 70, y: 330, w: 470, h: 90,  size: 12, align: "left", maxLines: 10 },
-        th2: { x: 70, y: 230, w: 470, h: 90,  size: 12, align: "left", maxLines: 10 }
+        dd1: { x: 25, y: 462, w: 550, h: 240, size: 13, align: "left", maxLines: 13 },
+        dd2: { x: 25, y: 292, w: 550, h: 310, size: 13, align: "left", maxLines: 17 },
+        th1: { x: 25, y: 142, w: 550, h: 160, size: 13, align: "left", maxLines: 9  },
+        th2: { x: 25, y:  62, w: 550, h: 160, size: 13, align: "left", maxLines: 9  }
       },
       p5Q: {
-        dd_q1: { x: 70, y: 410, w: 470, h: 28, size: 11, align: "left", maxLines: 2 },
-        dd_q2: { x: 70, y: 380, w: 470, h: 28, size: 11, align: "left", maxLines: 2 },
-        th_q1: { x: 70, y: 140, w: 470, h: 28, size: 11, align: "left", maxLines: 2 },
-        th_q2: { x: 70, y: 110, w: 470, h: 28, size: 11, align: "left", maxLines: 2 }
+        dd_q1: { x: 25, y: 492, w: 550, h: 40, size: 13, align: "left", maxLines: 2 },
+        dd_q2: { x: 25, y: 452, w: 550, h: 40, size: 13, align: "left", maxLines: 2 },
+        th_q1: { x: 25, y:  92, w: 550, h: 40, size: 13, align: "left", maxLines: 2 },
+        th_q2: { x: 25, y:  52, w: 550, h: 40, size: 13, align: "left", maxLines: 2 }
       }
     },
     p6: {
-      hdrName: { x: 70, y: 752, w: 460, h: 14, size: 10, align: "left", maxLines: 1 },
+      hdrName: { x: 380, y: 767, w: 400, h: 24, size: 13, align: "left", maxLines: 1 },
       p6WorkWith: {
-        collabC: { x: 70, y: 520, w: 470, h: 140, size: 12, align: "left", maxLines: 14 },
-        collabT: { x: 70, y: 350, w: 470, h: 140, size: 12, align: "left", maxLines: 14 }
+        collabC: { x: 30,  y: 122, w: 270, h: 420, size: 14, align: "left", maxLines: 14 },
+        collabT: { x: 320, y: 122, w: 260, h: 420, size: 14, align: "left", maxLines: 14 }
       },
       p6Q: {
-        col_q1:  { x: 70, y: 230, w: 470, h: 40, size: 11, align: "left", maxLines: 3 },
-        lead_q1: { x: 70, y: 180, w: 470, h: 40, size: 11, align: "left", maxLines: 3 }
+        col_q1:  { x: 30,  y: 252, w: 270, h: 40, size: 14, align: "left", maxLines: 2 },
+        lead_q1: { x: 320, y: 252, w: 260, h: 40, size: 14, align: "left", maxLines: 2 }
       }
     },
     p7: {
-      hdrName: { x: 70, y: 752, w: 460, h: 14, size: 10, align: "left", maxLines: 1 },
+      hdrName: { x: 380, y: 767, w: 400, h: 24, size: 13, align: "left", maxLines: 1 },
       p7Actions: {
-        act1: { x: 70, y: 520, w: 470, h: 90, size: 12, align: "left", maxLines: 8 },
-        act2: { x: 70, y: 400, w: 470, h: 90, size: 12, align: "left", maxLines: 8 },
-        act3: { x: 70, y: 280, w: 470, h: 90, size: 12, align: "left", maxLines: 8 }
+        act1: { x: 50,  y: 367, w: 440, h: 95, size: 16, align: "left", maxLines: 5 },
+        act2: { x: 100, y: 217, w: 440, h: 95, size: 16, align: "left", maxLines: 5 },
+        act3: { x: 50,  y:  77, w: 440, h: 95, size: 16, align: "left", maxLines: 5 }
       }
     },
-    p8: { hdrName: { x: 70, y: 752, w: 460, h: 14, size: 10, align: "left", maxLines: 1 } }
+    p8: { hdrName: { x: 380, y: 767, w: 400, h: 24, size: 13, align: "left", maxLines: 1 } }
   }
 };
 
@@ -466,14 +468,11 @@ export default async function handler(req, res) {
       secondKey: payload?.ctrl?.secondKey || payload?.secondKey
     });
 
-    // Validate combos (same set you had)
     const validCombos = new Set(["CT","CL","CR","TC","TR","TL","RC","RT","RL","LC","LR","LT"]);
     const safeCombo = validCombos.has(domSecond.templateKey) ? domSecond.templateKey : "CT";
 
-    // Resolve template from /public with Vercel-safe paths + fallback
     const tplInfo = await resolveTemplateFile(safeCombo);
 
-    // Inventory for debug/error
     const templateInventory = [];
     for (const dir of getPublicDirCandidates()) {
       const list = await listTemplatesInDir(dir);
@@ -497,7 +496,6 @@ export default async function handler(req, res) {
       return res.status(200).json(buildProbe(P, domSecond, tplInfo, ov, templateInventory));
     }
 
-    // Load template bytes
     const pdfBytes = await loadTemplateBytes(tplInfo.fullPath);
     const pdfDoc = await PDFDocument.load(pdfBytes);
 
@@ -543,7 +541,6 @@ export default async function handler(req, res) {
       drawTextBox(p4, font, P.ctrl_overview_para1, L.p4.p4Text.ov1);
       drawTextBox(p4, font, P.ctrl_overview_para2, L.p4.p4Text.ov2);
 
-      // Chart (time-boxed)
       try {
         await embedChartIfPresent(pdfDoc, p4, L.p4.p4Text.chart, P.chartUrl);
       } catch (e) {
