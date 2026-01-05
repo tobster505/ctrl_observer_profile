@@ -1,5 +1,5 @@
-// api/fill-template.js  (V2 – chart fixes only)
-// Runtime: Node.js (ESM). Make sure package.json has: { "type": "module" }
+// api/fill-template.js (V2.1 – chart fixes + tpl crash-proofing)
+// Runtime: Node.js (ESM). package.json should include: { "type": "module" }
 export const config = { runtime: "nodejs" };
 
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
@@ -30,21 +30,13 @@ const qnum = (url, k, fb = 0) => {
 
 /** Draw wrapped text in a box (top-left coordinate system via y from top) */
 function drawTextBox(page, font, text, box, opts = {}) {
-  const {
-    x,
-    y, // from top
-    w,
-    size = 12,
-    color = rgb(0, 0, 0),
-    align = "left",
-  } = box;
+  const { x, y, w, size = 12, color = rgb(0, 0, 0), align = "left" } = box;
 
   const pageH = page.getHeight();
   const lineGap = opts.lineGap ?? 3;
   const maxLines = opts.maxLines ?? 1000;
   const ellipsis = opts.ellipsis ?? false;
 
-  // naive wrapping
   const words = norm(text || "").split(/\s+/).filter(Boolean);
   const lines = [];
   let cur = "";
@@ -62,7 +54,6 @@ function drawTextBox(page, font, text, box, opts = {}) {
   }
   if (cur && lines.length < maxLines) lines.push(cur);
 
-  // Ellipsis if overflow
   let finalLines = lines.slice(0, maxLines);
   if (ellipsis && lines.length > maxLines && finalLines.length) {
     let last = finalLines[finalLines.length - 1];
@@ -90,64 +81,10 @@ function drawTextBox(page, font, text, box, opts = {}) {
 
 function dropLeadingLabel(s) {
   const t = norm(s || "");
-  // Removes "P.xxxx = " style labels if present
   return t.replace(/^\s*P\.[A-Za-z0-9_]+\s*=\s*/i, "");
-}
-function safeKeys(o, max = 50) {
-  try { return Object.keys(o || {}).slice(0, max); } catch { return []; }
-}
-function clip(s, n = 220) {
-  const t = String(s || "");
-  return t.length > n ? t.slice(0, n) + "…" : t;
-}
-function firstFoundCtrl12Source(payload) {
-  // Mirrors pickCtrl12Bands() order so we can report *where* it came from.
-  const d = payload || {};
-  const sources = [
-    ["ScoringTruth.PoC_FINAL.ctrl12", d?.ScoringTruth?.PoC_FINAL?.ctrl12],
-    ["scoringTruth.PoC_FINAL.ctrl12", d?.scoringTruth?.PoC_FINAL?.ctrl12],
-    ["PoC_FINAL.ctrl12", d?.PoC_FINAL?.ctrl12],
-
-    ["subject.ScoringTruth.PoC_FINAL.ctrl12", d?.subject?.ScoringTruth?.PoC_FINAL?.ctrl12],
-    ["subject.scoringTruth.PoC_FINAL.ctrl12", d?.subject?.scoringTruth?.PoC_FINAL?.ctrl12],
-    ["subject.PoC_FINAL.ctrl12", d?.subject?.PoC_FINAL?.ctrl12],
-    ["subject.ctrl12", d?.subject?.ctrl12],
-
-    ["self.ScoringTruth.PoC_FINAL.ctrl12", d?.self?.ScoringTruth?.PoC_FINAL?.ctrl12],
-    ["self.PoC_FINAL.ctrl12", d?.self?.PoC_FINAL?.ctrl12],
-    ["self.ctrl12", d?.self?.ctrl12],
-
-    ["target.ScoringTruth.PoC_FINAL.ctrl12", d?.target?.ScoringTruth?.PoC_FINAL?.ctrl12],
-    ["target.PoC_FINAL.ctrl12", d?.target?.PoC_FINAL?.ctrl12],
-    ["target.ctrl12", d?.target?.ctrl12],
-
-    ["JsonSummaryObj.ScoringTruth.PoC_FINAL.ctrl12", d?.JsonSummaryObj?.ScoringTruth?.PoC_FINAL?.ctrl12],
-    ["JsonSummaryObj.PoC_FINAL.ctrl12", d?.JsonSummaryObj?.PoC_FINAL?.ctrl12],
-    ["JsonSummaryObj.ctrl12", d?.JsonSummaryObj?.ctrl12],
-
-    ["raw.JsonSummaryObj.ScoringTruth.PoC_FINAL.ctrl12", d?.raw?.JsonSummaryObj?.ScoringTruth?.PoC_FINAL?.ctrl12],
-    ["raw.PoC_FINAL.ctrl12", d?.raw?.PoC_FINAL?.ctrl12],
-    ["raw.ctrl12", d?.raw?.ctrl12],
-
-    ["ctrl12", d?.ctrl12],
-    ["bands", d?.bands],
-    ["ctrl.bands", d?.ctrl?.bands],
-    ["ctrl.ctrl12", d?.ctrl?.ctrl12],
-  ];
-
-  for (const [path, obj] of sources) {
-    if (isObj(obj) && Object.keys(obj).length > 0) return path;
-  }
-  return "";
 }
 
 /* ───────────────────── spider chart helpers (V2) ───────────────────── */
-/*
-  Goal:
-  - ALWAYS render the same 12-band polarArea chart style as the User Profile.
-  - If an "explicitUrl" arrives but it is a *radar* chart (old spider), IGNORE it.
-  - Be much more flexible in where we look for ctrl12 in the incoming payload.
-*/
 
 const CTRL12_ORDER = [
   "C_low","C_mid","C_high",
@@ -160,7 +97,6 @@ function isObj(v){ return v && typeof v === "object" && !Array.isArray(v); }
 
 function looksLikeOldRadarUrl(u) {
   const s = String(u || "");
-  // matches both raw JSON and URL-encoded quickchart configs
   return (
     s.includes('"type":"radar"') ||
     s.includes("%22type%22%3A%22radar%22") ||
@@ -173,20 +109,16 @@ function looksLikeOldRadarUrl(u) {
 function pickCtrl12Bands(payload){
   const d = payload || {};
 
-  // Helper: try many candidate objects and return the first ctrl12-ish object we find.
   const candidates = [
-    // Common / intended (subject JsonSummaryObj)
     d?.ScoringTruth?.PoC_FINAL?.ctrl12,
     d?.scoringTruth?.PoC_FINAL?.ctrl12,
     d?.PoC_FINAL?.ctrl12,
 
-    // If payload nests the subject bundle
     d?.subject?.ScoringTruth?.PoC_FINAL?.ctrl12,
     d?.subject?.scoringTruth?.PoC_FINAL?.ctrl12,
     d?.subject?.PoC_FINAL?.ctrl12,
     d?.subject?.ctrl12,
 
-    // If payload nests it as self / target / raw packs
     d?.self?.ScoringTruth?.PoC_FINAL?.ctrl12,
     d?.self?.PoC_FINAL?.ctrl12,
     d?.self?.ctrl12,
@@ -195,17 +127,14 @@ function pickCtrl12Bands(payload){
     d?.target?.PoC_FINAL?.ctrl12,
     d?.target?.ctrl12,
 
-    // Sometimes stuffed under JsonSummaryObj key
     d?.JsonSummaryObj?.ScoringTruth?.PoC_FINAL?.ctrl12,
     d?.JsonSummaryObj?.PoC_FINAL?.ctrl12,
     d?.JsonSummaryObj?.ctrl12,
 
-    // Sometimes under raw
     d?.raw?.JsonSummaryObj?.ScoringTruth?.PoC_FINAL?.ctrl12,
     d?.raw?.PoC_FINAL?.ctrl12,
     d?.raw?.ctrl12,
 
-    // Other likely shapes
     d?.ctrl12,
     d?.bands,
     d?.ctrl?.bands,
@@ -220,15 +149,7 @@ function pickCtrl12Bands(payload){
   return out;
 }
 
-/* ───────── chart embed (12-band polarArea via QuickChart) ───────── */
 function makeSpiderChartUrl12(ctrl12Bands, opts = {}) {
-  // Match the USER chart behaviour:
-  // - polarArea
-  // - 12 segments
-  // - labels only on the middle of each triad
-  // - transparent background
-  // - Chart.js v4 forced
-
   const width  = Math.max(300, Math.min(2000, N(opts.width, 900)));
   const height = Math.max(300, Math.min(2000, N(opts.height, 900)));
 
@@ -295,48 +216,21 @@ function makeSpiderChartUrl12(ctrl12Bands, opts = {}) {
   };
 
   const enc = encodeURIComponent(JSON.stringify(cfg));
-  // Use the SAME parameter style as User fill-template:
   return `https://quickchart.io/chart?c=${enc}&format=png&width=${width}&height=${height}&backgroundColor=transparent&version=4`;
 }
 
-async function embedRemoteImage(pdfDoc, page, imgUrl, box, debugOut) {
-  const dbg = debugOut || null;
-
+async function embedRemoteImage(pdfDoc, page, imgUrl, box) {
   const r = await fetch(imgUrl);
-  if (dbg) {
-    dbg.fetch = {
-      ok: r.ok,
-      status: r.status,
-      statusText: r.statusText,
-      contentType: r.headers?.get?.("content-type") || "",
-    };
-  }
   if (!r.ok) throw new Error(`image fetch failed: ${r.status} ${r.statusText}`);
+  const buf = new Uint8Array(await r.arrayBuffer());
 
-  const arr = await r.arrayBuffer();
-  const buf = new Uint8Array(arr);
-
-  if (dbg) dbg.fetch.bytes = buf.length;
-
-  // Try PNG first, then JPG
   let img = null;
-  let mode = "";
-  try { img = await pdfDoc.embedPng(buf); mode = "png"; } catch (e) {
-    if (dbg) dbg.embedPngError = String(e?.message || e);
-  }
-  if (!img) {
-    try { img = await pdfDoc.embedJpg(buf); mode = "jpg"; } catch (e) {
-      if (dbg) dbg.embedJpgError = String(e?.message || e);
-      throw e;
-    }
-  }
-
-  if (dbg) dbg.embedMode = mode;
+  try { img = await pdfDoc.embedPng(buf); } catch {}
+  if (!img) img = await pdfDoc.embedJpg(buf);
 
   const ph = page.getHeight();
   const { x, y, w, h } = box;
 
-  // "contain" so we do not squash charts
   const iw = img.width, ih = img.height;
   const s = Math.min(w / iw, h / ih);
   const dw = iw * s, dh = ih * s;
@@ -344,56 +238,21 @@ async function embedRemoteImage(pdfDoc, page, imgUrl, box, debugOut) {
   const dy = (ph - y - h) + (h - dh) / 2;
 
   page.drawImage(img, { x: dx, y: dy, width: dw, height: dh });
-
-  if (dbg) {
-    dbg.draw = { box, placed: { x: dx, y: dy, w: dw, h: dh }, pageH: ph };
-  }
   return true;
 }
 
-
-async function embedRadarFromBandsOrUrl(pdfDoc, page, box, payload, explicitUrl, debugOut) {
-  const dbg = debugOut || null;
-
+async function embedRadarFromBandsOrUrl(pdfDoc, page, box, payload, explicitUrl) {
   const ctrl12 = pickCtrl12Bands(payload);
-  const sourcePath = firstFoundCtrl12Source(payload);
 
   let url = S(explicitUrl || "", "");
-  const urlLooksRadar = url && looksLikeOldRadarUrl(url);
+  if (url && looksLikeOldRadarUrl(url)) url = "";
 
-  if (url && urlLooksRadar) url = "";
-
-  const generated = ctrl12 ? makeSpiderChartUrl12(ctrl12, { width: 900, height: 900 }) : "";
-  const finalUrl = generated || url;
-
-  if (dbg) {
-    dbg.decision = {
-      explicitUrl: clip(explicitUrl, 300),
-      explicitUrlLooksRadar: !!urlLooksRadar,
-      ctrl12Found: !!ctrl12,
-      ctrl12SourcePath: sourcePath,
-      ctrl12Keys: ctrl12 ? safeKeys(ctrl12, 12) : [],
-      ctrl12Sample: ctrl12 ? {
-        C_low: ctrl12.C_low, C_mid: ctrl12.C_mid, C_high: ctrl12.C_high,
-        T_low: ctrl12.T_low, T_mid: ctrl12.T_mid, T_high: ctrl12.T_high,
-        R_low: ctrl12.R_low, R_mid: ctrl12.R_mid, R_high: ctrl12.R_high,
-        L_low: ctrl12.L_low, L_mid: ctrl12.L_mid, L_high: ctrl12.L_high,
-      } : null,
-      generatedUrlPrefix: clip(generated, 220),
-      finalUrlPrefix: clip(finalUrl, 220),
-      box
-    };
-  }
+  const finalUrl = (ctrl12 ? makeSpiderChartUrl12(ctrl12, { width: 900, height: 900 }) : "") || url;
 
   if (!finalUrl) return false;
-
-  await embedRemoteImage(pdfDoc, page, finalUrl, box, dbg);
-
-  if (dbg) dbg.ok = true;
+  await embedRemoteImage(pdfDoc, page, finalUrl, box);
   return true;
 }
-
-
 
 /* ───────────────────────── template fetch ───────────────────────── */
 async function fetchPdfBytes(templateUrl) {
@@ -404,13 +263,11 @@ async function fetchPdfBytes(templateUrl) {
 
 /* ───────────────────────── default layout ───────────────────────── */
 const DEFAULT_LAYOUT = {
-  // (unchanged) — your existing layout boxes
   p6: {
     why6:    { x: 90,  y: 355, w: 650, size: 12, align: "left", max: 12, lineGap: 3 },
     how6:    { x: 90,  y: 505, w: 650, size: 12, align: "left", max: 12, lineGap: 3 },
     chart6:  { x: 213, y: 250, w: 410, h: 230 },
   },
-  // other pages kept as-is below…
 };
 
 /* ───────────────────────── handler ───────────────────────── */
@@ -420,12 +277,24 @@ export default async function handler(req) {
     const u = new URL(url, "http://localhost");
 
     // Template selection
-    const tpl = u.searchParams.get("tpl") || u.searchParams.get("template") || "";
-    if (!tpl) return new Response(JSON.stringify({ ok: false, error: "Missing tpl" }), { status: 400 });
+    const tplRaw = u.searchParams.get("tpl") || u.searchParams.get("template") || "";
+    if (!tplRaw) {
+      return new Response(JSON.stringify({ ok: false, error: "Missing tpl" }), { status: 400 });
+    }
 
-    // Payload is base64 JSON in ?data=...
+    // Crash-proofing: if tpl is not absolute, treat it as a path on the same origin
+    // This prevents "Only absolute URLs are supported" from crashing the function.
+    let tpl = tplRaw;
+    if (!/^https?:\/\//i.test(tplRaw)) {
+      const path = tplRaw.startsWith("/") ? tplRaw : `/${tplRaw}`;
+      tpl = `${u.origin}${path}`;
+    }
+
+    // Payload is base64 JSON in ?data=
     const dataB64 = u.searchParams.get("data") || "";
-    if (!dataB64) return new Response(JSON.stringify({ ok: false, error: "Missing data" }), { status: 400 });
+    if (!dataB64) {
+      return new Response(JSON.stringify({ ok: false, error: "Missing data" }), { status: 400 });
+    }
 
     let data = {};
     try {
@@ -434,15 +303,13 @@ export default async function handler(req) {
     } catch (e) {
       return new Response(JSON.stringify({ ok: false, error: "Bad data JSON" }), { status: 400 });
     }
-const debugMode = (u.searchParams.get("debug") === "1");
-const chartDebug = { ok: false };
 
     // Load template
     const pdfBytes = await fetchPdfBytes(tpl);
     const pdf = await PDFDocument.load(pdfBytes);
     const Helv = await pdf.embedFont(StandardFonts.Helvetica);
 
-    // Override layout via query params (kept as-is)
+    // Override layout via query params
     const POS = JSON.parse(JSON.stringify(DEFAULT_LAYOUT.p6));
 
     POS.why6 = {
@@ -470,14 +337,15 @@ const chartDebug = { ok: false };
 
     // Pages
     const pages = pdf.getPages();
-    const page9 = pages[8]; // (unchanged assumption from your current file)
+    const page9 = pages[8]; // unchanged assumption
 
     if (page9) {
       const why6Text = dropLeadingLabel(data?.why6 || data?.p6_why || "");
       const how6Text = dropLeadingLabel(data?.how6 || data?.p6_how || "");
 
-      // Auto-fit WHY block
       const DEFAULT_LINE_GAP = 3;
+
+      // WHY
       const whyLineHeight = (POS.why6?.size ?? 12) + (POS.why6?.lineGap ?? DEFAULT_LINE_GAP);
       const whyAvailable  = page9.getHeight() - (POS.why6?.y ?? 0);
       const whyFitLines   = Math.max(1, Math.floor(whyAvailable / whyLineHeight));
@@ -493,7 +361,7 @@ const chartDebug = { ok: false };
         );
       }
 
-      // Auto-fit HOW block
+      // HOW
       const howLineHeight = (POS.how6?.size ?? 12) + (POS.how6?.lineGap ?? DEFAULT_LINE_GAP);
       const howAvailable  = page9.getHeight() - (POS.how6?.y ?? 0);
       const howFitLines   = Math.max(1, Math.floor(howAvailable / howLineHeight));
@@ -510,35 +378,18 @@ const chartDebug = { ok: false };
       }
 
       // Chart image
-      // Prefer explicit URL if NOT radar; otherwise regenerate from ctrl12 bands.
-try {
-  await embedRadarFromBandsOrUrl(
-    pdf,
-    page9,
-    POS.chart6,
-    data,
-    (data?.chartUrl || data?.spiderChartUrl || data?.spider?.chartUrl || ""),
-    chartDebug
-  );
-} catch (e) {
-  chartDebug.ok = false;
-  chartDebug.error = String(e?.message || e);
-if (debugMode) {
-  return new Response(JSON.stringify({
-    ok: true,
-    where: "fill-template:180:debug",
-    chartDebug,
-    payloadTopKeys: safeKeys(data, 80),
-    hasSpiderUrl: !!(data?.chartUrl || data?.spiderChartUrl || data?.spider?.chartUrl),
-    spiderUrlPrefix: clip((data?.chartUrl || data?.spiderChartUrl || data?.spider?.chartUrl || ""), 220),
-  }, null, 2), {
-    status: 200,
-    headers: { "Content-Type": "application/json", "Cache-Control": "no-store" }
-  });
-}
-
-  // production: ignore
-}
+      try {
+        await embedRadarFromBandsOrUrl(
+          pdf,
+          page9,
+          POS.chart6,
+          data,
+          (data?.chartUrl || data?.spiderChartUrl || data?.spider?.chartUrl || "")
+        );
+      } catch {
+        // ignore image failure
+      }
+    }
 
     const outBytes = await pdf.save();
     return new Response(outBytes, {
@@ -549,6 +400,9 @@ if (debugMode) {
       },
     });
   } catch (err) {
-    return new Response(JSON.stringify({ ok: false, error: String(err?.message || err) }), { status: 500 });
+    return new Response(
+      JSON.stringify({ ok: false, error: String(err?.message || err) }),
+      { status: 500 }
+    );
   }
 }
