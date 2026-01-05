@@ -94,7 +94,13 @@ function dropLeadingLabel(s) {
   return t.replace(/^\s*P\.[A-Za-z0-9_]+\s*=\s*/i, "");
 }
 
-/* ───────────────────── chart helpers (V2) ───────────────────── */
+/* ───────────────────── spider chart helpers (V2) ───────────────────── */
+/*
+  Goal:
+  - ALWAYS render the same 12-band polarArea chart style as the User Profile.
+  - If an "explicitUrl" arrives but it is a *radar* chart (old spider), IGNORE it.
+  - Be much more flexible in where we look for ctrl12 in the incoming payload.
+*/
 
 const CTRL12_ORDER = [
   "C_low","C_mid","C_high",
@@ -105,29 +111,61 @@ const CTRL12_ORDER = [
 
 function isObj(v){ return v && typeof v === "object" && !Array.isArray(v); }
 
+function looksLikeOldRadarUrl(u) {
+  const s = String(u || "");
+  // matches both raw JSON and URL-encoded quickchart configs
+  return (
+    s.includes('"type":"radar"') ||
+    s.includes("%22type%22%3A%22radar%22") ||
+    s.includes("type%22%3A%22radar") ||
+    s.includes("type=radar") ||
+    s.includes("chart?c=%7B%22type%22%3A%22radar")
+  );
+}
+
 function pickCtrl12Bands(payload){
   const d = payload || {};
 
-  // common shapes
-  const p1 = d?.ScoringTruth?.PoC_FINAL?.ctrl12;
-  const p2 = d?.scoringTruth?.PoC_FINAL?.ctrl12;
-  const p3 = d?.PoC_FINAL?.ctrl12;
-  const p4 = d?.ctrl12;
-  const p5 = d?.bands;
-  const p6 = d?.ctrl?.bands || d?.ctrl?.ctrl12;
-  const p7 = d?.raw?.ctrl12;
+  // Helper: try many candidate objects and return the first ctrl12-ish object we find.
+  const candidates = [
+    // Common / intended (subject JsonSummaryObj)
+    d?.ScoringTruth?.PoC_FINAL?.ctrl12,
+    d?.scoringTruth?.PoC_FINAL?.ctrl12,
+    d?.PoC_FINAL?.ctrl12,
 
-  // JsonSummaryObj shapes (your subject bundle)
-  const p8  = d?.JsonSummaryObj?.ScoringTruth?.PoC_FINAL?.ctrl12;
-  const p9  = d?.JsonSummaryObj?.scoringTruth?.PoC_FINAL?.ctrl12;
-  const p10 = d?.subject?.JsonSummaryObj?.ScoringTruth?.PoC_FINAL?.ctrl12;
-  const p11 = d?.subject?.ScoringTruth?.PoC_FINAL?.ctrl12;
-  const p12 = d?.subject?.PoC_FINAL?.ctrl12;
-  const p13 = d?.subject?.ctrl12;
+    // If payload nests the subject bundle
+    d?.subject?.ScoringTruth?.PoC_FINAL?.ctrl12,
+    d?.subject?.scoringTruth?.PoC_FINAL?.ctrl12,
+    d?.subject?.PoC_FINAL?.ctrl12,
+    d?.subject?.ctrl12,
 
-  const cand = [p1,p2,p3,p4,p5,p6,p7,p8,p9,p10,p11,p12,p13].find(
-    (x) => isObj(x) && Object.keys(x).length > 0
-  );
+    // If payload nests it as self / target / raw packs
+    d?.self?.ScoringTruth?.PoC_FINAL?.ctrl12,
+    d?.self?.PoC_FINAL?.ctrl12,
+    d?.self?.ctrl12,
+
+    d?.target?.ScoringTruth?.PoC_FINAL?.ctrl12,
+    d?.target?.PoC_FINAL?.ctrl12,
+    d?.target?.ctrl12,
+
+    // Sometimes stuffed under JsonSummaryObj key
+    d?.JsonSummaryObj?.ScoringTruth?.PoC_FINAL?.ctrl12,
+    d?.JsonSummaryObj?.PoC_FINAL?.ctrl12,
+    d?.JsonSummaryObj?.ctrl12,
+
+    // Sometimes under raw
+    d?.raw?.JsonSummaryObj?.ScoringTruth?.PoC_FINAL?.ctrl12,
+    d?.raw?.PoC_FINAL?.ctrl12,
+    d?.raw?.ctrl12,
+
+    // Other likely shapes
+    d?.ctrl12,
+    d?.bands,
+    d?.ctrl?.bands,
+    d?.ctrl?.ctrl12
+  ];
+
+  const cand = candidates.find(x => isObj(x) && Object.keys(x).length > 0);
   if (!isObj(cand)) return null;
 
   const out = {};
@@ -135,32 +173,20 @@ function pickCtrl12Bands(payload){
   return out;
 }
 
-// Detect incoming "radar" chart URLs so we can ignore them
-function isRadarChartUrl(url) {
-  const u = String(url || "");
-  return (
-    u.includes('"type":"radar"') ||
-    u.includes('%22type%22%3A%22radar%22') ||
-    u.includes("type%22%3A%22radar%22")
-  );
-}
-
-// Use explicit URL only if it is NOT radar; otherwise regenerate from ctrl12
-function preferPolarUrl(explicitUrl, ctrl12Bands, opts = {}) {
-  const u = String(explicitUrl || "").trim();
-  if (u && !isRadarChartUrl(u)) return u;
-  return ctrl12Bands ? makeSpiderChartUrl12(ctrl12Bands, opts) : "";
-}
-
-// NOTE: kept name makeSpiderChartUrl12 to avoid touching other code paths,
-// but it now generates the correct 12-slice polarArea chart.
+/* ───────── chart embed (12-band polarArea via QuickChart) ───────── */
 function makeSpiderChartUrl12(ctrl12Bands, opts = {}) {
-  const width  = Math.max(300, Math.min(2000, N(opts.width, 1200)));
-  const height = Math.max(300, Math.min(2000, N(opts.height, 1200)));
+  // Match the USER chart behaviour:
+  // - polarArea
+  // - 12 segments
+  // - labels only on the middle of each triad
+  // - transparent background
+  // - Chart.js v4 forced
+
+  const width  = Math.max(300, Math.min(2000, N(opts.width, 900)));
+  const height = Math.max(300, Math.min(2000, N(opts.height, 900)));
 
   const keys = CTRL12_ORDER;
 
-  // Show state names once per triad
   const displayLabels = [
     "", "Concealed", "",
     "", "Triggered", "",
@@ -169,9 +195,7 @@ function makeSpiderChartUrl12(ctrl12Bands, opts = {}) {
   ];
 
   const b = ctrl12Bands || {};
-  const vals = keys.map((k) => Math.max(0, Number(b?.[k] || 0)));
-
-  // Normalise to 0..1 based on max band (keeps visual stable)
+  const vals = keys.map((k) => Number(b?.[k] || 0));
   const maxVal = Math.max(...vals, 1);
   const data = vals.map((v) => (maxVal > 0 ? v / maxVal : 0));
 
@@ -183,9 +207,9 @@ function makeSpiderChartUrl12(ctrl12Bands, opts = {}) {
   };
 
   const colours = keys.map((k) => {
-    const state = k[0];              // C/T/R/L
-    const tier = k.split("_")[1];    // low/mid/high
-    return CTRL_COLOURS?.[state]?.[tier] || "rgba(0,0,0,0.10)";
+    const state = k[0];
+    const tier  = k.split("_")[1];
+    return CTRL_COLOURS[state]?.[tier] || "rgba(0,0,0,0.10)";
   });
 
   const startAngle = -Math.PI / 4;
@@ -198,14 +222,15 @@ function makeSpiderChartUrl12(ctrl12Bands, opts = {}) {
         data,
         backgroundColor: colours,
         borderWidth: 3,
-        borderColor: "rgba(0, 0, 0, 0.20)",
-      }],
+        borderColor: "rgba(0, 0, 0, 0.20)"
+      }]
     },
     options: {
       plugins: { legend: { display: false } },
       startAngle,
       scales: {
         r: {
+          startAngle,
           min: 0,
           max: 1,
           ticks: { display: false },
@@ -215,15 +240,16 @@ function makeSpiderChartUrl12(ctrl12Bands, opts = {}) {
             display: true,
             padding: 14,
             font: { size: 26, weight: "bold" },
-          },
-        },
-      },
-    },
+            centerPointLabels: true
+          }
+        }
+      }
+    }
   };
 
   const enc = encodeURIComponent(JSON.stringify(cfg));
-  // IMPORTANT: force Chart.js v4 so scales.r + pointLabels render correctly
-  return `https://quickchart.io/chart?c=${enc}&format=png&backgroundColor=white&width=${width}&height=${height}&v=4`;
+  // Use the SAME parameter style as User fill-template:
+  return `https://quickchart.io/chart?c=${enc}&format=png&width=${width}&height=${height}&backgroundColor=transparent&version=4`;
 }
 
 async function embedRemoteImage(pdfDoc, page, imgUrl, box) {
@@ -231,7 +257,6 @@ async function embedRemoteImage(pdfDoc, page, imgUrl, box) {
   if (!r.ok) throw new Error(`image fetch failed: ${r.status} ${r.statusText}`);
   const buf = new Uint8Array(await r.arrayBuffer());
 
-  // Try PNG first, then JPG
   let img = null;
   try { img = await pdfDoc.embedPng(buf); } catch {}
   if (!img) img = await pdfDoc.embedJpg(buf);
@@ -239,7 +264,6 @@ async function embedRemoteImage(pdfDoc, page, imgUrl, box) {
   const ph = page.getHeight();
   const { x, y, w, h } = box;
 
-  // "contain" so we do not squash charts
   const iw = img.width, ih = img.height;
   const s = Math.min(w / iw, h / ih);
   const dw = iw * s, dh = ih * s;
@@ -251,12 +275,21 @@ async function embedRemoteImage(pdfDoc, page, imgUrl, box) {
 }
 
 async function embedRadarFromBandsOrUrl(pdfDoc, page, box, payload, explicitUrl) {
+  // 1) Pull ctrl12 from *any* known payload shape
   const ctrl12 = pickCtrl12Bands(payload);
-  const finalUrl = preferPolarUrl(explicitUrl, ctrl12, { width: 900, height: 900 });
+
+  // 2) Only trust explicitUrl if it is NOT the old radar spider chart
+  let url = S(explicitUrl || "", "");
+  if (url && looksLikeOldRadarUrl(url)) url = "";
+
+  // 3) Prefer building the new polar chart from ctrl12
+  const finalUrl = (ctrl12 ? makeSpiderChartUrl12(ctrl12, { width: 900, height: 900 }) : "") || url;
+
   if (!finalUrl) return false;
   await embedRemoteImage(pdfDoc, page, finalUrl, box);
   return true;
 }
+
 
 /* ───────────────────────── template fetch ───────────────────────── */
 async function fetchPdfBytes(templateUrl) {
