@@ -1,5 +1,5 @@
-// api/fill-template.js  (V4 – Coach-style ?data= only, tpl comes from payload.tpl)
-// Runtime: Node.js (ESM). package.json should contain: { "type": "module" }
+// api/fill-template.js  (V4 – Coach-style ?data= only + base64url decode + fetch timeouts)
+// Runtime: Node.js (ESM). Make sure package.json has: { "type": "module" }
 export const config = { runtime: "nodejs" };
 
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
@@ -44,6 +44,7 @@ function drawTextBox(page, font, text, box, opts = {}) {
   const maxLines = opts.maxLines ?? 1000;
   const ellipsis = opts.ellipsis ?? false;
 
+  // naive wrapping
   const words = norm(text || "").split(/\s+/).filter(Boolean);
   const lines = [];
   let cur = "";
@@ -61,6 +62,7 @@ function drawTextBox(page, font, text, box, opts = {}) {
   }
   if (cur && lines.length < maxLines) lines.push(cur);
 
+  // Ellipsis if overflow
   let finalLines = lines.slice(0, maxLines);
   if (ellipsis && lines.length > maxLines && finalLines.length) {
     let last = finalLines[finalLines.length - 1];
@@ -88,33 +90,11 @@ function drawTextBox(page, font, text, box, opts = {}) {
 
 function dropLeadingLabel(s) {
   const t = norm(s || "");
+  // Removes "P.xxxx = " style labels if present
   return t.replace(/^\s*P\.[A-Za-z0-9_]+\s*=\s*/i, "");
 }
 
-function isObj(v){ return v && typeof v === "object" && !Array.isArray(v); }
-
-/* ───────────────────── base64/base64url decode ───────────────────── */
-function decodeDataParam(dataParam) {
-  const raw = String(dataParam || "").trim();
-  if (!raw) return null;
-
-  // Accept BOTH base64url (new) and base64 (old)
-  const isProbablyB64url = /[-_]/.test(raw) && !/[+/]/.test(raw);
-
-  const b64 = isProbablyB64url
-    ? raw.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(raw.length / 4) * 4, "=")
-    : raw;
-
-  try {
-    const jsonStr = Buffer.from(b64, "base64").toString("utf8");
-    const parsed = JSON.parse(jsonStr);
-    return (parsed && typeof parsed === "object") ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
-/* ───────────────────── spider chart helpers (unchanged logic) ───────────────────── */
+/* ───────────────────── spider chart helpers (V2) ───────────────────── */
 const CTRL12_ORDER = [
   "C_low","C_mid","C_high",
   "T_low","T_mid","T_high",
@@ -122,8 +102,11 @@ const CTRL12_ORDER = [
   "L_low","L_mid","L_high"
 ];
 
+function isObj(v){ return v && typeof v === "object" && !Array.isArray(v); }
+
 function looksLikeOldRadarUrl(u) {
   const s = String(u || "");
+  // matches both raw JSON and URL-encoded quickchart configs
   return (
     s.includes('"type":"radar"') ||
     s.includes("%22type%22%3A%22radar%22") ||
@@ -176,6 +159,7 @@ function pickCtrl12Bands(payload){
   return out;
 }
 
+/* ───────── chart embed (12-band polarArea via QuickChart) ───────── */
 function makeSpiderChartUrl12(ctrl12Bands, opts = {}) {
   const width  = Math.max(300, Math.min(2000, N(opts.width, 900)));
   const height = Math.max(300, Math.min(2000, N(opts.height, 900)));
@@ -246,8 +230,8 @@ function makeSpiderChartUrl12(ctrl12Bands, opts = {}) {
   return `https://quickchart.io/chart?c=${enc}&format=png&width=${width}&height=${height}&backgroundColor=transparent&version=4`;
 }
 
-/* ───────────────────────── fetch with timeout ───────────────────────── */
-async function fetchWithTimeout(url, ms = 20000) {
+/* ───────────────────────── fetch with timeout (NEW V4) ───────────────────────── */
+async function fetchWithTimeout(url, ms = 8000) {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), ms);
   try {
@@ -259,7 +243,7 @@ async function fetchWithTimeout(url, ms = 20000) {
 
 /* ───────────────────────── image embed ───────────────────────── */
 async function embedRemoteImage(pdfDoc, page, imgUrl, box) {
-  const r = await fetchWithTimeout(imgUrl, 20000);
+  const r = await fetchWithTimeout(imgUrl, 6000);
   if (!r.ok) throw new Error(`image fetch failed: ${r.status} ${r.statusText}`);
   const buf = new Uint8Array(await r.arrayBuffer());
 
@@ -281,11 +265,14 @@ async function embedRemoteImage(pdfDoc, page, imgUrl, box) {
 }
 
 async function embedRadarFromBandsOrUrl(pdfDoc, page, box, payload, explicitUrl) {
+  // 1) Find ctrl12
   const ctrl12 = pickCtrl12Bands(payload);
 
+  // 2) Only trust explicitUrl if it is NOT the old radar spider chart
   let url = S(explicitUrl || "", "");
   if (url && looksLikeOldRadarUrl(url)) url = "";
 
+  // 3) Prefer building the new polar chart from ctrl12
   const finalUrl = (ctrl12 ? makeSpiderChartUrl12(ctrl12, { width: 900, height: 900 }) : "") || url;
 
   if (!finalUrl) return false;
@@ -293,11 +280,32 @@ async function embedRadarFromBandsOrUrl(pdfDoc, page, box, payload, explicitUrl)
   return true;
 }
 
-/* ───────────────────────── template fetch ───────────────────────── */
+/* ───────────────────────── template fetch (UPDATED V4 timeout) ───────────────────────── */
 async function fetchPdfBytes(templateUrl) {
-  const r = await fetchWithTimeout(templateUrl, 20000);
+  const r = await fetchWithTimeout(templateUrl, 8000);
   if (!r.ok) throw new Error(`Template fetch failed: ${r.status} ${r.statusText}`);
   return new Uint8Array(await r.arrayBuffer());
+}
+
+/* ───────────────────────── base64url decode (NEW V4) ───────────────────────── */
+function decodeDataParam(dataParam) {
+  const raw = String(dataParam || "").trim();
+  if (!raw) return null;
+
+  // accept base64url OR base64
+  const isProbablyB64url = /[-_]/.test(raw) && !/[+/]/.test(raw);
+  const b64 = isProbablyB64url
+    ? raw.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(raw.length / 4) * 4, "=")
+    : raw;
+
+  try {
+    const jsonStr = Buffer.from(b64, "base64").toString("utf8");
+    const parsed = JSON.parse(jsonStr);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
 }
 
 /* ───────────────────────── default layout ───────────────────────── */
@@ -317,44 +325,50 @@ export default async function handler(req) {
     const url = req.url || "";
     const u = new URL(url, "http://localhost");
 
-    // 1) Read payload from ?data=
+    // Optional debug mode (NEW V4): returns decode/tpl without generating PDF
+    const debug = (u.searchParams.get("debug") || "") === "1";
+
+    // Payload is base64/base64url JSON in ?data=
     const dataParam = u.searchParams.get("data") || "";
-    if (!dataParam) {
-      return new Response(JSON.stringify({ ok: false, error: "Missing data" }), { status: 400 });
-    }
+    if (!dataParam) return new Response(JSON.stringify({ ok: false, error: "Missing data" }), { status: 400 });
 
     const data = decodeDataParam(dataParam);
-    if (!data) {
-      return new Response(JSON.stringify({ ok: false, error: "Bad data JSON" }), { status: 400 });
+    if (!data) return new Response(JSON.stringify({ ok: false, error: "Bad data JSON" }), { status: 400 });
+
+    // Coach-style template selection: tpl comes from payload.tpl (filename)
+    const tplFile = String(data?.tpl || "").trim();
+    if (!tplFile) return new Response(JSON.stringify({ ok: false, error: "Missing tpl in payload" }), { status: 400 });
+
+    // Recursion guard + sanity checks (NEW V4)
+    if (tplFile.includes("/api/") || tplFile.includes("api/fill-template")) {
+      return new Response(JSON.stringify({ ok: false, error: "tpl looks like an API path (recursion risk)" }), { status: 400 });
+    }
+    if (!/\.pdf(\?|#|$)/i.test(tplFile)) {
+      return new Response(JSON.stringify({ ok: false, error: "tpl must be a .pdf filename" }), { status: 400 });
     }
 
-    // 2) Template selection
-    // - New (coach-style): payload.tpl = "file.pdf"
-    // - Backwards compat: allow ?tpl= to override
-    const tplQuery = (u.searchParams.get("tpl") || u.searchParams.get("template") || "").trim();
-    const tplFromPayload = String(data?.tpl || "").trim();
+    const tplUrl = `${u.origin}/${tplFile.replace(/^\/+/, "")}`;
 
-    if (!tplQuery && !tplFromPayload) {
-      return new Response(JSON.stringify({ ok: false, error: "Missing tpl (expected payload.tpl)" }), { status: 400 });
+    if (debug) {
+      return new Response(JSON.stringify({
+        ok: true,
+        where: "fill-template V4 debug",
+        origin: u.origin,
+        tplFile,
+        tplUrl,
+        keys: Object.keys(data).sort().slice(0, 120)
+      }), {
+        status: 200,
+        headers: { "Content-Type": "application/json", "Cache-Control": "no-store" }
+      });
     }
 
-    // If tplQuery exists it may be absolute already; if not, treat payload tpl as filename.
-    // Coach-style behaviour: build absolute template URL from this same origin.
-    let tplUrl = "";
-
-    if (tplQuery) {
-      tplUrl = tplQuery;
-    } else {
-      const file = tplFromPayload.replace(/^\/+/, ""); // strip leading slashes
-      tplUrl = `${u.origin}/${file}`;
-    }
-
-    // 3) Load template
+    // Load template
     const pdfBytes = await fetchPdfBytes(tplUrl);
     const pdf = await PDFDocument.load(pdfBytes);
     const Helv = await pdf.embedFont(StandardFonts.Helvetica);
 
-    // 4) Override layout via query params (kept as-is)
+    // Override layout via query params (kept as-is)
     const POS = JSON.parse(JSON.stringify(DEFAULT_LAYOUT.p6));
 
     POS.why6 = {
@@ -380,9 +394,9 @@ export default async function handler(req) {
       h: qnum(url, "c6h", POS.chart6.h),
     };
 
-    // 5) Pages
+    // Pages
     const pages = pdf.getPages();
-    const page9 = pages[8]; // unchanged from your current file
+    const page9 = pages[8]; // (unchanged assumption from your current file)
 
     if (page9) {
       const why6Text = dropLeadingLabel(data?.why6 || data?.p6_why || "");
@@ -431,9 +445,7 @@ export default async function handler(req) {
           data,
           (data?.chartUrl || data?.spiderChartUrl || data?.spider?.chartUrl || "")
         );
-      } catch {
-        /* ignore image failure */
-      }
+      } catch { /* ignore image failure */ }
     }
 
     const outBytes = await pdf.save();
@@ -445,6 +457,9 @@ export default async function handler(req) {
       },
     });
   } catch (err) {
-    return new Response(JSON.stringify({ ok: false, error: String(err?.message || err) }), { status: 500 });
+    return new Response(JSON.stringify({ ok: false, error: String(err?.message || err) }), {
+      status: 500,
+      headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+    });
   }
 }
