@@ -1,465 +1,619 @@
-// api/fill-template.js  (V4 – Coach-style ?data= only + base64url decode + fetch timeouts)
-// Runtime: Node.js (ESM). Make sure package.json has: { "type": "module" }
+/**
+ * CTRL Observer Export Service · fill-template (OBSERVER 180 V5 · Coach-format routing + timeouts)
+ *
+ * Matches Coach V5 behaviour:
+ * - URL format: /api/fill-template?data=<base64 JSON>
+ * - NO tpl= param
+ * - Template chosen internally using dominantKey+secondKey => safeCombo
+ * - Uses local PDF templates in /public
+ *
+ * 180 templates expected in /public:
+ *   CTRL_PoC_180_Assessment_Report_template_CT.pdf
+ *   CTRL_PoC_180_Assessment_Report_template_TR.pdf
+ *   ... etc (12 combos)
+ */
+
 export const config = { runtime: "nodejs" };
 
-import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
+import fs from "fs/promises";
+import path from "path";
+import { fileURLToPath } from "url";
+import { PDFDocument, StandardFonts } from "pdf-lib";
 
-/* ───────────────────────── helpers ───────────────────────── */
+/* ───────── template naming (OBSERVER/180) ───────── */
+const TEMPLATE_PREFIX = "CTRL_PoC_180_Assessment_Report_template_";
+
+/* ───────────── small utils ───────────── */
 const S = (v, fb = "") => (v == null ? String(fb) : String(v));
 const N = (v, fb = 0) => (Number.isFinite(+v) ? +v : fb);
-const norm = (v, fb = "") =>
-  S(v, fb)
-    .replace(/[\u2018\u2019]/g, "'")
-    .replace(/[\u201C\u201D]/g, '"')
-    .replace(/[\u2013\u2014]/g, "-")
-    .replace(/[^\x09\x0A\x0D\x20-\x7E]/g, "");
+const norm = (s) => S(s).replace(/\s+/g, " ").trim();
+const okObj = (o) => o && typeof o === "object" && !Array.isArray(o);
 
-/** Query param helpers */
-const qstr = (url, k, fb = "") => {
+function safeJson(obj) {
+  try { return JSON.parse(JSON.stringify(obj)); }
+  catch { return { _error: "Could not serialise debug object" }; }
+}
+
+/* ───────── WinAnsi-safe text normaliser ───────── */
+function winAnsiSafe(input) {
+  let s = String(input ?? "");
+
+  // Hyphens / dashes
+  s = s
+    .replace(/\u2010/g, "-")
+    .replace(/\u2011/g, "-")
+    .replace(/\u2012/g, "-")
+    .replace(/\u2013/g, "-")
+    .replace(/\u2014/g, "-")
+    .replace(/\u2212/g, "-");
+
+  // Quotes
+  s = s
+    .replace(/\u2018|\u2019|\u201A|\u201B/g, "'")
+    .replace(/\u201C|\u201D|\u201E|\u201F/g, '"');
+
+  // Ellipsis
+  s = s.replace(/\u2026/g, "...");
+
+  // Spaces
+  s = s
+    .replace(/\u00A0/g, " ")
+    .replace(/\u2007/g, " ")
+    .replace(/\u202F/g, " ");
+
+  return s;
+}
+
+/* ───────── filename helpers ───────── */
+function clampStrForFilename(s) {
+  return S(s)
+    .trim()
+    .replace(/\s+/g, "_")
+    .replace(/[^A-Za-z0-9_\-]/g, "")
+    .replace(/_+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+function parseDateLabelToYYYYMMDD(dateLbl) {
+  const s = S(dateLbl).trim();
+  const m = s.match(/^(\d{1,2})\s+([A-Za-z]{3,9})\s+(\d{4})$/);
+  if (!m) return "";
+  const dd = m[1].padStart(2, "0");
+  const mon = m[2].toLowerCase();
+  const yyyy = m[3];
+  const map = {
+    jan:"01", january:"01",
+    feb:"02", february:"02",
+    mar:"03", march:"03",
+    apr:"04", april:"04",
+    may:"05",
+    jun:"06", june:"06",
+    jul:"07", july:"07",
+    aug:"08", august:"08",
+    sep:"09", sept:"09", september:"09",
+    oct:"10", october:"10",
+    nov:"11", november:"11",
+    dec:"12", december:"12"
+  };
+  const mm = map[mon] || "";
+  return mm ? `${yyyy}${mm}${dd}` : "";
+}
+function makeOutputFilename(fullName, dateLabel) {
+  const n = clampStrForFilename(fullName) || "CTRL_Observer_180_Report";
+  const d = parseDateLabelToYYYYMMDD(dateLabel) || "";
+  return d ? `${n}_180_${d}.pdf` : `${n}_180.pdf`;
+}
+
+/* ───────── read payload from ?data= (base64 JSON) ───────── */
+async function readPayload(req) {
+  const url = new URL(req.url, "http://localhost");
+  const dataB64 = url.searchParams.get("data") || "";
+  if (!dataB64) throw new Error("Missing data");
+
+  let jsonStr = "";
   try {
-    const u = new URL(url);
-    return u.searchParams.get(k) ?? fb;
-  } catch {
-    return fb;
-  }
-};
-const qnum = (url, k, fb = 0) => {
-  const v = qstr(url, k, "");
-  return v === "" ? fb : N(v, fb);
-};
-
-/** Draw wrapped text in a box (top-left coordinate system via y from top) */
-function drawTextBox(page, font, text, box, opts = {}) {
-  const {
-    x,
-    y, // from top
-    w,
-    size = 12,
-    color = rgb(0, 0, 0),
-    align = "left",
-  } = box;
-
-  const pageH = page.getHeight();
-  const lineGap = opts.lineGap ?? 3;
-  const maxLines = opts.maxLines ?? 1000;
-  const ellipsis = opts.ellipsis ?? false;
-
-  // naive wrapping
-  const words = norm(text || "").split(/\s+/).filter(Boolean);
-  const lines = [];
-  let cur = "";
-
-  const widthOf = (s) => font.widthOfTextAtSize(s, size);
-
-  for (const word of words) {
-    const test = cur ? `${cur} ${word}` : word;
-    if (widthOf(test) <= w) cur = test;
-    else {
-      if (cur) lines.push(cur);
-      cur = word;
-    }
-    if (lines.length >= maxLines) break;
-  }
-  if (cur && lines.length < maxLines) lines.push(cur);
-
-  // Ellipsis if overflow
-  let finalLines = lines.slice(0, maxLines);
-  if (ellipsis && lines.length > maxLines && finalLines.length) {
-    let last = finalLines[finalLines.length - 1];
-    while (last.length && widthOf(last + "…") > w) last = last.slice(0, -1);
-    finalLines[finalLines.length - 1] = (last || "").trimEnd() + "…";
+    jsonStr = Buffer.from(dataB64, "base64").toString("utf8");
+  } catch (e) {
+    throw new Error("Bad data base64");
   }
 
-  const lineHeight = size + lineGap;
-  let curY = pageH - y - size;
-
-  for (const ln of finalLines) {
-    if (curY < 0) break;
-
-    let dx = x;
-    const lw = widthOf(ln);
-    if (align === "center") dx = x + (w - lw) / 2;
-    else if (align === "right") dx = x + (w - lw);
-
-    page.drawText(ln, { x: dx, y: curY, size, font, color });
-    curY -= lineHeight;
+  let obj = null;
+  try {
+    obj = JSON.parse(jsonStr);
+  } catch (e) {
+    throw new Error("Bad data JSON");
   }
 
-  return { lines: finalLines.length };
+  if (!okObj(obj)) throw new Error("Parsed data not an object");
+  return obj;
 }
 
-function dropLeadingLabel(s) {
-  const t = norm(s || "");
-  // Removes "P.xxxx = " style labels if present
-  return t.replace(/^\s*P\.[A-Za-z0-9_]+\s*=\s*/i, "");
+/* ───────── template loader (local /public) ───────── */
+async function loadTemplateBytesLocal(filename) {
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = path.dirname(__filename);
+
+  // Vercel places /public at project root
+  const p = path.join(__dirname, "..", "..", "public", filename);
+  return await fs.readFile(p);
 }
 
-/* ───────────────────── spider chart helpers (V2) ───────────────────── */
-const CTRL12_ORDER = [
-  "C_low","C_mid","C_high",
-  "T_low","T_mid","T_high",
-  "R_low","R_mid","R_high",
-  "L_low","L_mid","L_high"
-];
-
-function isObj(v){ return v && typeof v === "object" && !Array.isArray(v); }
-
-function looksLikeOldRadarUrl(u) {
-  const s = String(u || "");
-  // matches both raw JSON and URL-encoded quickchart configs
-  return (
-    s.includes('"type":"radar"') ||
-    s.includes("%22type%22%3A%22radar%22") ||
-    s.includes("type%22%3A%22radar") ||
-    s.includes("type=radar") ||
-    s.includes("chart?c=%7B%22type%22%3A%22radar")
-  );
-}
-
-function pickCtrl12Bands(payload){
-  const d = payload || {};
-
-  const candidates = [
-    d?.ScoringTruth?.PoC_FINAL?.ctrl12,
-    d?.scoringTruth?.PoC_FINAL?.ctrl12,
-    d?.PoC_FINAL?.ctrl12,
-
-    d?.subject?.ScoringTruth?.PoC_FINAL?.ctrl12,
-    d?.subject?.scoringTruth?.PoC_FINAL?.ctrl12,
-    d?.subject?.PoC_FINAL?.ctrl12,
-    d?.subject?.ctrl12,
-
-    d?.self?.ScoringTruth?.PoC_FINAL?.ctrl12,
-    d?.self?.PoC_FINAL?.ctrl12,
-    d?.self?.ctrl12,
-
-    d?.target?.ScoringTruth?.PoC_FINAL?.ctrl12,
-    d?.target?.PoC_FINAL?.ctrl12,
-    d?.target?.ctrl12,
-
-    d?.JsonSummaryObj?.ScoringTruth?.PoC_FINAL?.ctrl12,
-    d?.JsonSummaryObj?.PoC_FINAL?.ctrl12,
-    d?.JsonSummaryObj?.ctrl12,
-
-    d?.raw?.JsonSummaryObj?.ScoringTruth?.PoC_FINAL?.ctrl12,
-    d?.raw?.PoC_FINAL?.ctrl12,
-    d?.raw?.ctrl12,
-
-    d?.ctrl12,
-    d?.bands,
-    d?.ctrl?.bands,
-    d?.ctrl?.ctrl12
-  ];
-
-  const cand = candidates.find(x => isObj(x) && Object.keys(x).length > 0);
-  if (!isObj(cand)) return null;
-
-  const out = {};
-  for (const k of CTRL12_ORDER) out[k] = N(cand[k], 0);
-  return out;
-}
-
-/* ───────── chart embed (12-band polarArea via QuickChart) ───────── */
-function makeSpiderChartUrl12(ctrl12Bands, opts = {}) {
-  const width  = Math.max(300, Math.min(2000, N(opts.width, 900)));
-  const height = Math.max(300, Math.min(2000, N(opts.height, 900)));
-
-  const keys = CTRL12_ORDER;
-
-  const displayLabels = [
-    "", "Concealed", "",
-    "", "Triggered", "",
-    "", "Regulated", "",
-    "", "Lead", ""
-  ];
-
-  const b = ctrl12Bands || {};
-  const vals = keys.map((k) => Number(b?.[k] || 0));
-  const maxVal = Math.max(...vals, 1);
-  const data = vals.map((v) => (maxVal > 0 ? v / maxVal : 0));
-
-  const CTRL_COLOURS = {
-    C: { low: "rgba(230, 228, 225, 0.55)", mid: "rgba(184, 180, 174, 0.55)", high: "rgba(110, 106, 100, 0.55)" },
-    T: { low: "rgba(244, 225, 198, 0.55)", mid: "rgba(211, 155,  74, 0.55)", high: "rgba(154,  94,  26, 0.55)" },
-    R: { low: "rgba(226, 236, 230, 0.55)", mid: "rgba(143, 183, 161, 0.55)", high: "rgba( 79, 127, 105, 0.55)" },
-    L: { low: "rgba(230, 220, 227, 0.55)", mid: "rgba(164, 135, 159, 0.55)", high: "rgba( 94,  63,  90, 0.55)" },
-  };
-
-  const colours = keys.map((k) => {
-    const state = k[0];
-    const tier  = k.split("_")[1];
-    return CTRL_COLOURS[state]?.[tier] || "rgba(0,0,0,0.10)";
-  });
-
-  const startAngle = -Math.PI / 4;
-
-  const cfg = {
-    type: "polarArea",
-    data: {
-      labels: displayLabels,
-      datasets: [{
-        data,
-        backgroundColor: colours,
-        borderWidth: 3,
-        borderColor: "rgba(0, 0, 0, 0.20)"
-      }]
+/* ───────── layout definition (same structure as Coach V5) ───────── */
+const DEFAULT_LAYOUT = {
+  pages: {
+    p1: {
+      name: { x: 70, y: 700, w: 460, h: 22, size: 22, align: "left", maxLines: 1 },
+      date: { x: 70, y: 670, w: 460, h: 16, size: 12, align: "left", maxLines: 1 }
     },
-    options: {
-      plugins: { legend: { display: false } },
-      startAngle,
-      scales: {
-        r: {
-          startAngle,
-          min: 0,
-          max: 1,
-          ticks: { display: false },
-          grid: { display: true },
-          angleLines: { display: false },
-          pointLabels: {
-            display: true,
-            padding: 14,
-            font: { size: 26, weight: "bold" },
-            centerPointLabels: true
-          }
-        }
-      }
-    }
-  };
 
-  const enc = encodeURIComponent(JSON.stringify(cfg));
-  return `https://quickchart.io/chart?c=${enc}&format=png&width=${width}&height=${height}&backgroundColor=transparent&version=4`;
+    // Pages 2–8 header name
+    p2: { hdrName: { x: 70, y: 752, w: 460, h: 14, size: 10, align: "left", maxLines: 1 } },
+    p3: {
+      hdrName: { x: 70, y: 752, w: 460, h: 14, size: 10, align: "left", maxLines: 1 },
+      p3Text: {
+        exec1: { x: 70, y: 580, w: 470, h: 110, size: 12, align: "left", maxLines: 12 },
+        exec2: { x: 70, y: 450, w: 470, h: 110, size: 12, align: "left", maxLines: 12 }
+      },
+      p3Q: {
+        exec_q1: { x: 70, y: 360, w: 470, h: 30, size: 11, align: "left", maxLines: 2 },
+        exec_q2: { x: 70, y: 320, w: 470, h: 30, size: 11, align: "left", maxLines: 2 },
+        exec_q3: { x: 70, y: 280, w: 470, h: 30, size: 11, align: "left", maxLines: 2 },
+        exec_q4: { x: 70, y: 240, w: 470, h: 30, size: 11, align: "left", maxLines: 2 }
+      }
+    },
+    p4: {
+      hdrName: { x: 70, y: 752, w: 460, h: 14, size: 10, align: "left", maxLines: 1 },
+      p4Text: {
+        ov1: { x: 70, y: 590, w: 470, h: 110, size: 12, align: "left", maxLines: 12 },
+        ov2: { x: 70, y: 460, w: 470, h: 110, size: 12, align: "left", maxLines: 12 },
+        chart: { x: 300, y: 270, w: 240, h: 160 }
+      },
+      p4Q: {
+        ov_q1: { x: 70, y: 210, w: 470, h: 30, size: 11, align: "left", maxLines: 2 },
+        ov_q2: { x: 70, y: 170, w: 470, h: 30, size: 11, align: "left", maxLines: 2 }
+      }
+    },
+    p5: {
+      hdrName: { x: 70, y: 752, w: 460, h: 14, size: 10, align: "left", maxLines: 1 },
+      p5Text: {
+        dd1: { x: 70, y: 590, w: 470, h: 110, size: 12, align: "left", maxLines: 12 },
+        dd2: { x: 70, y: 460, w: 470, h: 110, size: 12, align: "left", maxLines: 12 },
+        th1: { x: 70, y: 330, w: 470, h: 90,  size: 12, align: "left", maxLines: 10 },
+        th2: { x: 70, y: 230, w: 470, h: 90,  size: 12, align: "left", maxLines: 10 }
+      },
+      p5Q: {
+        dd_q1: { x: 70, y: 410, w: 470, h: 28, size: 11, align: "left", maxLines: 2 },
+        dd_q2: { x: 70, y: 380, w: 470, h: 28, size: 11, align: "left", maxLines: 2 },
+        th_q1: { x: 70, y: 140, w: 470, h: 28, size: 11, align: "left", maxLines: 2 },
+        th_q2: { x: 70, y: 110, w: 470, h: 28, size: 11, align: "left", maxLines: 2 }
+      }
+    },
+
+    /* Page 6 (Coach V5 style: ONLY 2 WorkWith + 2 bottom questions) */
+    p6: {
+      hdrName: { x: 70, y: 752, w: 460, h: 14, size: 10, align: "left", maxLines: 1 },
+      p6WorkWith: {
+        collabC: { x: 70, y: 520, w: 470, h: 140, size: 12, align: "left", maxLines: 14 },
+        collabT: { x: 70, y: 350, w: 470, h: 140, size: 12, align: "left", maxLines: 14 }
+      },
+      p6Q: {
+        col_q1:  { x: 70, y: 230, w: 470, h: 40, size: 11, align: "left", maxLines: 3 },
+        lead_q1: { x: 70, y: 180, w: 470, h: 40, size: 11, align: "left", maxLines: 3 }
+      }
+    },
+
+    p7: {
+      hdrName: { x: 70, y: 752, w: 460, h: 14, size: 10, align: "left", maxLines: 1 },
+      p7Actions: {
+        act1: { x: 70, y: 520, w: 470, h: 90, size: 12, align: "left", maxLines: 8 },
+        act2: { x: 70, y: 400, w: 470, h: 90, size: 12, align: "left", maxLines: 8 },
+        act3: { x: 70, y: 280, w: 470, h: 90, size: 12, align: "left", maxLines: 8 }
+      }
+    },
+
+    p8: { hdrName: { x: 70, y: 752, w: 460, h: 14, size: 10, align: "left", maxLines: 1 } }
+  }
+};
+
+/* ───────── layout override support (same pattern as Coach) ───────── */
+function applyLayoutOverridesFromUrl(layoutPages, url) {
+  // Stubbed to “no-op” unless you are already using overrides.
+  // Kept here to match Coach structure and keep future compatibility.
+  return { layout: layoutPages, applied: [], ignored: [] };
 }
 
-/* ───────────────────────── fetch with timeout (NEW V4) ───────────────────────── */
-async function fetchWithTimeout(url, ms = 8000) {
+/* ───────── text wrapping + drawing ───────── */
+function splitLinesToFit(text, maxChars) {
+  const raw = norm(winAnsiSafe(text));
+  if (!raw) return [];
+  const words = raw.split(" ");
+  const lines = [];
+  let line = "";
+  for (const w of words) {
+    const next = line ? `${line} ${w}` : w;
+    if (next.length <= maxChars) line = next;
+    else {
+      if (line) lines.push(line);
+      line = w;
+    }
+  }
+  if (line) lines.push(line);
+  return lines;
+}
+
+function drawTextBox(page, font, text, box, opts = {}) {
+  if (!page || !box) return;
+  const size = N(box.size, 12);
+  const maxLines = N(opts.maxLines, N(box.maxLines, 10));
+  const align = box.align || "left";
+
+  // rough char capacity estimate per line
+  const maxChars = Math.max(10, Math.floor(N(box.w, 300) / (size * 0.52)));
+
+  const lines = splitLinesToFit(S(text), maxChars).slice(0, maxLines);
+  const lh = size + 2;
+
+  let y = N(box.y, 0);
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    let x = N(box.x, 0);
+
+    // simple alignment
+    if (align === "center") {
+      const tw = font.widthOfTextAtSize(line, size);
+      x = x + (N(box.w, 0) - tw) / 2;
+    } else if (align === "right") {
+      const tw = font.widthOfTextAtSize(line, size);
+      x = x + N(box.w, 0) - tw;
+    }
+
+    page.drawText(line, { x, y: y - i * lh, size, font });
+  }
+}
+
+/* ───────── compute dom/second (same as Coach) ───────── */
+function computeDomAndSecondKeys({ raw, domKey, secondKey }) {
+  const bands =
+    raw?.ctrl?.bands ||
+    raw?.bands ||
+    {};
+
+  const sumState = (prefix) =>
+    N(bands[prefix+"low"]) + N(bands[prefix+"mid"]) + N(bands[prefix+"high"]) ||
+    N(bands[prefix+"Low"]) + N(bands[prefix+"Mid"]) + N(bands[prefix+"High"]) ||
+    0;
+
+  let D = (S(domKey).toUpperCase() || "").slice(0,1);
+  let S2 = (S(secondKey).toUpperCase() || "").slice(0,1);
+
+  if (!D || !S2) {
+    const totals = {
+      C: sumState("C_"),
+      T: sumState("T_"),
+      R: sumState("R_"),
+      L: sumState("L_")
+    };
+    const sorted = Object.entries(totals).sort((a,b)=> b[1]-a[1]);
+    if (!D)  D  = sorted[0]?.[0] || "";
+    if (!S2) S2 = sorted[1]?.[0] || "";
+  }
+
+  return {
+    domKey: D,
+    secondKey: S2,
+    templateKey: (D && S2) ? (D + S2) : ""
+  };
+}
+
+/* ───────── bullet formatting for questions ───────── */
+function bulletQ(s) {
+  const t = norm(winAnsiSafe(s));
+  if (!t) return "";
+  // Keep it simple: always prefix a bullet
+  return t.startsWith("•") ? t : `• ${t}`;
+}
+
+/* ───────── normalise input payload -> draw fields ───────── */
+function normaliseInput(d) {
+  const identity = okObj(d.identity) ? d.identity : {};
+  const text = okObj(d.text) ? d.text : {};
+  const actions = okObj(d.actions) ? d.actions : {};
+
+  const fullName = norm(identity.fullName || d.fullName || "");
+  const dateLabel = norm(identity.dateLabel || d.dateLbl || "");
+
+  const bandsRaw = okObj(d?.ctrl?.bands) ? d.ctrl.bands : (okObj(d.bands) ? d.bands : {});
+  const chartUrl = norm(d.chartUrl || d.spiderChartUrl || d?.chart?.spiderUrl || "");
+
+  // main paragraphs
+  const exec = norm(text.exec_summary || "");
+  const ov   = norm(text.ctrl_overview || "");
+  const dd   = norm(text.ctrl_deepdive || "");
+  const th   = norm(text.themes || "");
+  const adaptC = norm(text.adapt_with_colleagues || "");
+  const adaptL = norm(text.adapt_with_leaders || "");
+
+  // split into 2 paras (simple halfway split by sentence-ish)
+  const split2 = (s) => {
+    const t = norm(winAnsiSafe(s));
+    if (!t) return ["", ""];
+    const parts = t.split(/(?<=[.!?])\s+/);
+    if (parts.length <= 1) {
+      const mid = Math.ceil(t.length / 2);
+      return [t.slice(0, mid).trim(), t.slice(mid).trim()];
+    }
+    const mid = Math.ceil(parts.length / 2);
+    return [parts.slice(0, mid).join(" ").trim(), parts.slice(mid).join(" ").trim()];
+  };
+
+  const [execA, execB] = split2(exec);
+  const [ovA, ovB]     = split2(ov);
+  const [ddA, ddB]     = split2(dd);
+  const [thA, thB]     = split2(th);
+
+  // actions
+  const act1 = norm(actions.actions1 || d.Act1 || "");
+  const act2 = norm(actions.actions2 || d.Act2 || "");
+  const act3 = norm(actions.actions3 || d.Act3 || "");
+
+  return {
+    raw: d,
+    identity: { fullName, dateLabel },
+    bands: bandsRaw,
+
+    exec_summary_para1: execA,
+    exec_summary_para2: execB,
+
+    ctrl_overview_para1: ovA,
+    ctrl_overview_para2: ovB,
+
+    ctrl_deepdive_para1: ddA,
+    ctrl_deepdive_para2: ddB,
+
+    themes_para1: thA,
+    themes_para2: thB,
+
+    // questions
+    exec_q1: bulletQ(text.exec_summary_q1),
+    exec_q2: bulletQ(text.exec_summary_q2),
+    exec_q3: bulletQ(text.exec_summary_q3),
+    exec_q4: bulletQ(text.exec_summary_q4),
+
+    ov_q1: bulletQ(text.ctrl_overview_q1),
+    ov_q2: bulletQ(text.ctrl_overview_q2),
+
+    dd_q1: bulletQ(text.ctrl_deepdive_q1),
+    dd_q2: bulletQ(text.ctrl_deepdive_q2),
+
+    th_q1: bulletQ(text.themes_q1),
+    th_q2: bulletQ(text.themes_q2),
+
+    col_q1: bulletQ(text.adapt_with_colleagues_q1),
+    lead_q1: bulletQ(text.adapt_with_leaders_q2),
+
+    workWith: {
+      concealed: adaptC,
+      triggered: adaptL,
+    },
+
+    Act1: act1,
+    Act2: act2,
+    Act3: act3,
+
+    chartUrl,
+  };
+}
+
+/* ───────── fetch with timeout to prevent 504 hangs ───────── */
+async function fetchWithTimeout(url, ms = 6500) {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), ms);
   try {
-    return await fetch(url, { signal: ctrl.signal });
+    const res = await fetch(url, { signal: ctrl.signal });
+    if (!res.ok) throw new Error(`Fetch failed ${res.status}`);
+    const ab = await res.arrayBuffer();
+    return Buffer.from(ab);
   } finally {
     clearTimeout(t);
   }
 }
 
-/* ───────────────────────── image embed ───────────────────────── */
-async function embedRemoteImage(pdfDoc, page, imgUrl, box) {
-  const r = await fetchWithTimeout(imgUrl, 6000);
-  if (!r.ok) throw new Error(`image fetch failed: ${r.status} ${r.statusText}`);
-  const buf = new Uint8Array(await r.arrayBuffer());
+/* ───────── embed radar chart (bands OR remote chartUrl) ───────── */
+async function embedRadarFromBandsOrUrl(pdfDoc, page, box, bands, chartUrl) {
+  // If you have a deterministic chart renderer elsewhere, chartUrl can be used.
+  // BUT remote fetch must be timed-out to avoid Vercel hanging.
+  if (!pdfDoc || !page || !box) return;
 
-  let img = null;
-  try { img = await pdfDoc.embedPng(buf); } catch {}
-  if (!img) img = await pdfDoc.embedJpg(buf);
-
-  const ph = page.getHeight();
-  const { x, y, w, h } = box;
-
-  const iw = img.width, ih = img.height;
-  const s = Math.min(w / iw, h / ih);
-  const dw = iw * s, dh = ih * s;
-  const dx = x + (w - dw) / 2;
-  const dy = (ph - y - h) + (h - dh) / 2;
-
-  page.drawImage(img, { x: dx, y: dy, width: dw, height: dh });
-  return true;
-}
-
-async function embedRadarFromBandsOrUrl(pdfDoc, page, box, payload, explicitUrl) {
-  // 1) Find ctrl12
-  const ctrl12 = pickCtrl12Bands(payload);
-
-  // 2) Only trust explicitUrl if it is NOT the old radar spider chart
-  let url = S(explicitUrl || "", "");
-  if (url && looksLikeOldRadarUrl(url)) url = "";
-
-  // 3) Prefer building the new polar chart from ctrl12
-  const finalUrl = (ctrl12 ? makeSpiderChartUrl12(ctrl12, { width: 900, height: 900 }) : "") || url;
-
-  if (!finalUrl) return false;
-  await embedRemoteImage(pdfDoc, page, finalUrl, box);
-  return true;
-}
-
-/* ───────────────────────── template fetch (UPDATED V4 timeout) ───────────────────────── */
-async function fetchPdfBytes(templateUrl) {
-  const r = await fetchWithTimeout(templateUrl, 8000);
-  if (!r.ok) throw new Error(`Template fetch failed: ${r.status} ${r.statusText}`);
-  return new Uint8Array(await r.arrayBuffer());
-}
-
-/* ───────────────────────── base64url decode (NEW V4) ───────────────────────── */
-function decodeDataParam(dataParam) {
-  const raw = String(dataParam || "").trim();
-  if (!raw) return null;
-
-  // accept base64url OR base64
-  const isProbablyB64url = /[-_]/.test(raw) && !/[+/]/.test(raw);
-  const b64 = isProbablyB64url
-    ? raw.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(raw.length / 4) * 4, "=")
-    : raw;
-
-  try {
-    const jsonStr = Buffer.from(b64, "base64").toString("utf8");
-    const parsed = JSON.parse(jsonStr);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
-    return parsed;
-  } catch {
-    return null;
+  // Prefer remote chartUrl if provided (same as Coach logic)
+  if (chartUrl) {
+    const imgBytes = await fetchWithTimeout(chartUrl, 6500);
+    // png assumed; if you use jpg, you can detect by signature
+    const img = await pdfDoc.embedPng(imgBytes);
+    page.drawImage(img, { x: box.x, y: box.y, width: box.w, height: box.h });
+    return;
   }
+
+  // If no chartUrl, do nothing (bands-only render not implemented here)
+  // This matches your current stack where chartUrl is typically provided.
 }
 
-/* ───────────────────────── default layout ───────────────────────── */
-const DEFAULT_LAYOUT = {
-  // (unchanged) — your existing layout boxes
-  p6: {
-    why6:    { x: 90,  y: 355, w: 650, size: 12, align: "left", max: 12, lineGap: 3 },
-    how6:    { x: 90,  y: 505, w: 650, size: 12, align: "left", max: 12, lineGap: 3 },
-    chart6:  { x: 213, y: 250, w: 410, h: 230 },
-  },
-  // other pages kept as-is below…
-};
+/* ───────── debug probe ───────── */
+function buildProbe(P, domSecond, tpl, ov) {
+  return {
+    ok: true,
+    where: "fill-template:OBSERVER_180:debug",
+    template: tpl,
+    domSecond: safeJson(domSecond),
+    identity: { fullName: P.identity.fullName, dateLabel: P.identity.dateLabel },
+    textLengths: {
+      exec1: S(P.exec_summary_para1).length,
+      exec2: S(P.exec_summary_para2).length,
+      ov1: S(P.ctrl_overview_para1).length,
+      ov2: S(P.ctrl_overview_para2).length,
+      dd1: S(P.ctrl_deepdive_para1).length,
+      dd2: S(P.ctrl_deepdive_para2).length,
+      th1: S(P.themes_para1).length,
+      th2: S(P.themes_para2).length,
+      adapt_colleagues: S(P.workWith?.concealed).length,
+      adapt_leaders: S(P.workWith?.triggered).length,
+      act1: S(P.Act1).length,
+      act2: S(P.Act2).length,
+      act3: S(P.Act3).length,
 
-/* ───────────────────────── handler ───────────────────────── */
-export default async function handler(req) {
+      exec_q1: S(P.exec_q1).length,
+      exec_q2: S(P.exec_q2).length,
+      exec_q3: S(P.exec_q3).length,
+      exec_q4: S(P.exec_q4).length,
+      ov_q1: S(P.ov_q1).length,
+      ov_q2: S(P.ov_q2).length,
+      dd_q1: S(P.dd_q1).length,
+      dd_q2: S(P.dd_q2).length,
+      th_q1: S(P.th_q1).length,
+      th_q2: S(P.th_q2).length,
+      col_q1: S(P.col_q1).length,
+      lead_q1: S(P.lead_q1).length,
+    },
+    chart: {
+      chartUrl: P.chartUrl ? P.chartUrl.slice(0, 140) : "",
+      hasChartUrl: !!P.chartUrl
+    },
+    layoutOverrides: {
+      appliedCount: ov?.applied?.length || 0,
+      ignoredCount: ov?.ignored?.length || 0,
+      applied: ov?.applied || [],
+      ignored: ov?.ignored || [],
+    },
+  };
+}
+
+/* ───────── main handler ───────── */
+export default async function handler(req, res) {
   try {
-    const url = req.url || "";
-    const u = new URL(url, "http://localhost");
+    const url = new URL(req.url, "http://localhost");
+    const debug = url.searchParams.get("debug") === "1";
 
-    // Optional debug mode (NEW V4): returns decode/tpl without generating PDF
-    const debug = (u.searchParams.get("debug") || "") === "1";
+    const payload = await readPayload(req);
+    const P = normaliseInput(payload);
 
-    // Payload is base64/base64url JSON in ?data=
-    const dataParam = u.searchParams.get("data") || "";
-    if (!dataParam) return new Response(JSON.stringify({ ok: false, error: "Missing data" }), { status: 400 });
-
-    const data = decodeDataParam(dataParam);
-    if (!data) return new Response(JSON.stringify({ ok: false, error: "Bad data JSON" }), { status: 400 });
-
-    // Coach-style template selection: tpl comes from payload.tpl (filename)
-    const tplFile = String(data?.tpl || "").trim();
-    if (!tplFile) return new Response(JSON.stringify({ ok: false, error: "Missing tpl in payload" }), { status: 400 });
-
-    // Recursion guard + sanity checks (NEW V4)
-    if (tplFile.includes("/api/") || tplFile.includes("api/fill-template")) {
-      return new Response(JSON.stringify({ ok: false, error: "tpl looks like an API path (recursion risk)" }), { status: 400 });
-    }
-    if (!/\.pdf(\?|#|$)/i.test(tplFile)) {
-      return new Response(JSON.stringify({ ok: false, error: "tpl must be a .pdf filename" }), { status: 400 });
-    }
-
-    const tplUrl = `${u.origin}/${tplFile.replace(/^\/+/, "")}`;
-
-    if (debug) {
-      return new Response(JSON.stringify({
-        ok: true,
-        where: "fill-template V4 debug",
-        origin: u.origin,
-        tplFile,
-        tplUrl,
-        keys: Object.keys(data).sort().slice(0, 120)
-      }), {
-        status: 200,
-        headers: { "Content-Type": "application/json", "Cache-Control": "no-store" }
-      });
-    }
-
-    // Load template
-    const pdfBytes = await fetchPdfBytes(tplUrl);
-    const pdf = await PDFDocument.load(pdfBytes);
-    const Helv = await pdf.embedFont(StandardFonts.Helvetica);
-
-    // Override layout via query params (kept as-is)
-    const POS = JSON.parse(JSON.stringify(DEFAULT_LAYOUT.p6));
-
-    POS.why6 = {
-      ...POS.why6,
-      x: qnum(url, "why6x", POS.why6.x),
-      y: qnum(url, "why6y", POS.why6.y),
-      w: qnum(url, "why6w", POS.why6.w),
-      size: qnum(url, "why6s", POS.why6.size),
-      max: qnum(url, "why6max", POS.why6.max),
-    };
-    POS.how6 = {
-      ...POS.how6,
-      x: qnum(url, "how6x", POS.how6.x),
-      y: qnum(url, "how6y", POS.how6.y),
-      w: qnum(url, "how6w", POS.how6.w),
-      size: qnum(url, "how6s", POS.how6.size),
-      max: qnum(url, "how6max", POS.how6.max),
-    };
-    POS.chart6 = {
-      x: qnum(url, "c6x", POS.chart6.x),
-      y: qnum(url, "c6y", POS.chart6.y),
-      w: qnum(url, "c6w", POS.chart6.w),
-      h: qnum(url, "c6h", POS.chart6.h),
-    };
-
-    // Pages
-    const pages = pdf.getPages();
-    const page9 = pages[8]; // (unchanged assumption from your current file)
-
-    if (page9) {
-      const why6Text = dropLeadingLabel(data?.why6 || data?.p6_why || "");
-      const how6Text = dropLeadingLabel(data?.how6 || data?.p6_how || "");
-
-      // Auto-fit WHY block
-      const DEFAULT_LINE_GAP = 3;
-      const whyLineHeight = (POS.why6?.size ?? 12) + (POS.why6?.lineGap ?? DEFAULT_LINE_GAP);
-      const whyAvailable  = page9.getHeight() - (POS.why6?.y ?? 0);
-      const whyFitLines   = Math.max(1, Math.floor(whyAvailable / whyLineHeight));
-      const whyMaxLines   = Math.min((POS.why6?.max ?? 12), whyFitLines);
-
-      if (why6Text) {
-        drawTextBox(
-          page9,
-          Helv,
-          why6Text,
-          { ...POS.why6, color: rgb(0.24,0.23,0.35), align: POS.why6.align },
-          { maxLines: whyMaxLines, ellipsis: true }
-        );
-      }
-
-      // Auto-fit HOW block
-      const howLineHeight = (POS.how6?.size ?? 12) + (POS.how6?.lineGap ?? DEFAULT_LINE_GAP);
-      const howAvailable  = page9.getHeight() - (POS.how6?.y ?? 0);
-      const howFitLines   = Math.max(1, Math.floor(howAvailable / howLineHeight));
-      const howMaxLines   = Math.min((POS.how6?.max ?? 12), howFitLines);
-
-      if (how6Text) {
-        drawTextBox(
-          page9,
-          Helv,
-          how6Text,
-          { ...POS.how6, color: rgb(0.24,0.23,0.35), align: POS.how6.align },
-          { maxLines: howMaxLines, ellipsis: true }
-        );
-      }
-
-      // Chart image
-      // Prefer explicit URL if NOT radar; otherwise regenerate from ctrl12 bands.
-      try {
-        await embedRadarFromBandsOrUrl(
-          pdf,
-          page9,
-          POS.chart6,
-          data,
-          (data?.chartUrl || data?.spiderChartUrl || data?.spider?.chartUrl || "")
-        );
-      } catch { /* ignore image failure */ }
-    }
-
-    const outBytes = await pdf.save();
-    return new Response(outBytes, {
-      status: 200,
-      headers: {
-        "Content-Type": "application/pdf",
-        "Cache-Control": "no-store",
-      },
+    const domSecond = computeDomAndSecondKeys({
+      raw: payload,
+      domKey: payload?.ctrl?.dominantKey || payload?.dominantKey,
+      secondKey: payload?.ctrl?.secondKey || payload?.secondKey
     });
+
+    const validCombos = new Set(["CT","CL","CR","TC","TR","TL","RC","RT","RL","LC","LR","LT"]);
+    const safeCombo = validCombos.has(domSecond.templateKey) ? domSecond.templateKey : "CT";
+
+    const tpl = {
+      combo: domSecond.templateKey,
+      safeCombo,
+      tpl: `${TEMPLATE_PREFIX}${safeCombo}.pdf`
+    };
+
+    if (!DEFAULT_LAYOUT || !DEFAULT_LAYOUT.pages) {
+      throw new Error("DEFAULT_LAYOUT missing.");
+    }
+
+    const L = safeJson(DEFAULT_LAYOUT.pages);
+    const ov = applyLayoutOverridesFromUrl(L, url);
+
+    if (debug) return res.status(200).json(buildProbe(P, domSecond, tpl, ov));
+
+    const pdfBytes = await loadTemplateBytesLocal(tpl.tpl);
+    const pdfDoc = await PDFDocument.load(pdfBytes);
+
+    const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+    const fontB = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+
+    const pages = pdfDoc.getPages();
+
+    // Page 1
+    if (pages[0]) {
+      drawTextBox(pages[0], fontB, P.identity.fullName, L.p1.name, { maxLines: 1 });
+      drawTextBox(pages[0], font,  P.identity.dateLabel, L.p1.date, { maxLines: 1 });
+    }
+
+    // Header name pages 2–8
+    const headerName = norm(P.identity.fullName);
+    if (headerName) {
+      for (let i = 1; i < Math.min(pages.length, 8); i++) {
+        const pk = `p${i + 1}`;
+        const box = L?.[pk]?.hdrName;
+        if (box) drawTextBox(pages[i], font, headerName, box, { maxLines: 1 });
+      }
+    }
+
+    const p3 = pages[2] || null;
+    const p4 = pages[3] || null;
+    const p5 = pages[4] || null;
+    const p6 = pages[5] || null;
+    const p7 = pages[6] || null;
+
+    if (p3) {
+      drawTextBox(p3, font, P.exec_summary_para1, L.p3Text.exec1);
+      drawTextBox(p3, font, P.exec_summary_para2, L.p3Text.exec2);
+
+      drawTextBox(p3, font, P.exec_q1, L.p3Q.exec_q1);
+      drawTextBox(p3, font, P.exec_q2, L.p3Q.exec_q2);
+      drawTextBox(p3, font, P.exec_q3, L.p3Q.exec_q3);
+      drawTextBox(p3, font, P.exec_q4, L.p3Q.exec_q4);
+    }
+
+    if (p4) {
+      drawTextBox(p4, font, P.ctrl_overview_para1, L.p4Text.ov1);
+      drawTextBox(p4, font, P.ctrl_overview_para2, L.p4Text.ov2);
+
+      try {
+        await embedRadarFromBandsOrUrl(pdfDoc, p4, L.p4Text.chart, P.bands || {}, P.chartUrl);
+      } catch (e) {
+        console.warn("[fill-template:OBSERVER_180] Chart skipped:", e?.message || String(e));
+      }
+
+      drawTextBox(p4, font, P.ov_q1, L.p4Q.ov_q1);
+      drawTextBox(p4, font, P.ov_q2, L.p4Q.ov_q2);
+    }
+
+    if (p5) {
+      drawTextBox(p5, font, P.ctrl_deepdive_para1, L.p5Text.dd1);
+      drawTextBox(p5, font, P.ctrl_deepdive_para2, L.p5Text.dd2);
+
+      drawTextBox(p5, font, P.themes_para1, L.p5Text.th1);
+      drawTextBox(p5, font, P.themes_para2, L.p5Text.th2);
+
+      drawTextBox(p5, font, P.dd_q1, L.p5Q.dd_q1);
+      drawTextBox(p5, font, P.dd_q2, L.p5Q.dd_q2);
+      drawTextBox(p5, font, P.th_q1, L.p5Q.th_q1);
+      drawTextBox(p5, font, P.th_q2, L.p5Q.th_q2);
+    }
+
+    if (p6) {
+      // Only the 2 WorkWith boxes
+      drawTextBox(p6, font, P.workWith?.concealed, L.p6WorkWith.collabC);
+      drawTextBox(p6, font, P.workWith?.triggered, L.p6WorkWith.collabT);
+
+      // Questions drawn into bottom template fields
+      drawTextBox(p6, font, P.col_q1,  L.p6Q.col_q1);
+      drawTextBox(p6, font, P.lead_q1, L.p6Q.lead_q1);
+    }
+
+    if (p7) {
+      drawTextBox(p7, font, P.Act1, L.p7Actions.act1);
+      drawTextBox(p7, font, P.Act2, L.p7Actions.act2);
+      drawTextBox(p7, font, P.Act3, L.p7Actions.act3);
+    }
+
+    const outBytes = await pdfDoc.save();
+    const outName = makeOutputFilename(P.identity.fullName, P.identity.dateLabel);
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Cache-Control", "no-store");
+    res.setHeader("Content-Disposition", `inline; filename="${outName}"`);
+    res.status(200).send(Buffer.from(outBytes));
   } catch (err) {
-    return new Response(JSON.stringify({ ok: false, error: String(err?.message || err) }), {
-      status: 500,
-      headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+    console.error("[fill-template:OBSERVER_180] CRASH", err);
+    res.status(500).json({
+      ok: false,
+      error: err?.message || String(err),
+      stack: err?.stack || null,
     });
   }
 }
