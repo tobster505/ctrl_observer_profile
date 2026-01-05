@@ -1,5 +1,5 @@
-// api/fill-template.js  (V3 – MATCH BUILD V3: base64url decode + STOP HANGS via fetch timeouts)
-// Runtime: Node.js (ESM). Make sure package.json has: { "type": "module" }
+// api/fill-template.js  (V4 – Coach-style ?data= only, tpl comes from payload.tpl)
+// Runtime: Node.js (ESM). package.json should contain: { "type": "module" }
 export const config = { runtime: "nodejs" };
 
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
@@ -28,31 +28,16 @@ const qnum = (url, k, fb = 0) => {
   return v === "" ? fb : N(v, fb);
 };
 
-/* ───────────────────────── timeout fetch helpers ─────────────────────────
-   These prevent the function “hanging” forever if:
-   - template fetch stalls
-   - quickchart/image fetch stalls
-*/
-function makeAbort(timeoutMs) {
-  const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), timeoutMs);
-  return { signal: ctrl.signal, done: () => clearTimeout(t) };
-}
-
-async function fetchArrayBufferWithTimeout(url, timeoutMs, label) {
-  const { signal, done } = makeAbort(timeoutMs);
-  try {
-    const r = await fetch(url, { signal });
-    if (!r.ok) throw new Error(`${label} fetch failed: ${r.status} ${r.statusText}`);
-    return await r.arrayBuffer();
-  } finally {
-    done();
-  }
-}
-
 /** Draw wrapped text in a box (top-left coordinate system via y from top) */
 function drawTextBox(page, font, text, box, opts = {}) {
-  const { x, y, w, size = 12, color = rgb(0, 0, 0), align = "left" } = box;
+  const {
+    x,
+    y, // from top
+    w,
+    size = 12,
+    color = rgb(0, 0, 0),
+    align = "left",
+  } = box;
 
   const pageH = page.getHeight();
   const lineGap = opts.lineGap ?? 3;
@@ -106,17 +91,36 @@ function dropLeadingLabel(s) {
   return t.replace(/^\s*P\.[A-Za-z0-9_]+\s*=\s*/i, "");
 }
 
-/* ───────────────────── spider chart helpers (V2 baseline preserved) ─────────────────────
-   Source baseline: fill-template 180 v2.1.txt :contentReference[oaicite:3]{index=3}
-*/
+function isObj(v){ return v && typeof v === "object" && !Array.isArray(v); }
+
+/* ───────────────────── base64/base64url decode ───────────────────── */
+function decodeDataParam(dataParam) {
+  const raw = String(dataParam || "").trim();
+  if (!raw) return null;
+
+  // Accept BOTH base64url (new) and base64 (old)
+  const isProbablyB64url = /[-_]/.test(raw) && !/[+/]/.test(raw);
+
+  const b64 = isProbablyB64url
+    ? raw.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(raw.length / 4) * 4, "=")
+    : raw;
+
+  try {
+    const jsonStr = Buffer.from(b64, "base64").toString("utf8");
+    const parsed = JSON.parse(jsonStr);
+    return (parsed && typeof parsed === "object") ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+/* ───────────────────── spider chart helpers (unchanged logic) ───────────────────── */
 const CTRL12_ORDER = [
   "C_low","C_mid","C_high",
   "T_low","T_mid","T_high",
   "R_low","R_mid","R_high",
   "L_low","L_mid","L_high"
 ];
-
-function isObj(v){ return v && typeof v === "object" && !Array.isArray(v); }
 
 function looksLikeOldRadarUrl(u) {
   const s = String(u || "");
@@ -242,9 +246,22 @@ function makeSpiderChartUrl12(ctrl12Bands, opts = {}) {
   return `https://quickchart.io/chart?c=${enc}&format=png&width=${width}&height=${height}&backgroundColor=transparent&version=4`;
 }
 
-async function embedRemoteImage(pdfDoc, page, imgUrl, box, timeoutMs = 9000) {
-  const ab = await fetchArrayBufferWithTimeout(imgUrl, timeoutMs, "Image");
-  const buf = new Uint8Array(ab);
+/* ───────────────────────── fetch with timeout ───────────────────────── */
+async function fetchWithTimeout(url, ms = 20000) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), ms);
+  try {
+    return await fetch(url, { signal: ctrl.signal });
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+/* ───────────────────────── image embed ───────────────────────── */
+async function embedRemoteImage(pdfDoc, page, imgUrl, box) {
+  const r = await fetchWithTimeout(imgUrl, 20000);
+  if (!r.ok) throw new Error(`image fetch failed: ${r.status} ${r.statusText}`);
+  const buf = new Uint8Array(await r.arrayBuffer());
 
   let img = null;
   try { img = await pdfDoc.embedPng(buf); } catch {}
@@ -272,24 +289,26 @@ async function embedRadarFromBandsOrUrl(pdfDoc, page, box, payload, explicitUrl)
   const finalUrl = (ctrl12 ? makeSpiderChartUrl12(ctrl12, { width: 900, height: 900 }) : "") || url;
 
   if (!finalUrl) return false;
-  await embedRemoteImage(pdfDoc, page, finalUrl, box, 9000);
+  await embedRemoteImage(pdfDoc, page, finalUrl, box);
   return true;
 }
 
-/* ───────────────────────── template fetch (V3: timeout) ───────────────────────── */
+/* ───────────────────────── template fetch ───────────────────────── */
 async function fetchPdfBytes(templateUrl) {
-  const ab = await fetchArrayBufferWithTimeout(templateUrl, 9000, "Template");
-  return new Uint8Array(ab);
+  const r = await fetchWithTimeout(templateUrl, 20000);
+  if (!r.ok) throw new Error(`Template fetch failed: ${r.status} ${r.statusText}`);
+  return new Uint8Array(await r.arrayBuffer());
 }
 
 /* ───────────────────────── default layout ───────────────────────── */
 const DEFAULT_LAYOUT = {
+  // (unchanged) — your existing layout boxes
   p6: {
     why6:    { x: 90,  y: 355, w: 650, size: 12, align: "left", max: 12, lineGap: 3 },
     how6:    { x: 90,  y: 505, w: 650, size: 12, align: "left", max: 12, lineGap: 3 },
     chart6:  { x: 213, y: 250, w: 410, h: 230 },
   },
-  // other pages remain as per your repo file (not altered here)
+  // other pages kept as-is below…
 };
 
 /* ───────────────────────── handler ───────────────────────── */
@@ -298,38 +317,44 @@ export default async function handler(req) {
     const url = req.url || "";
     const u = new URL(url, "http://localhost");
 
-    // Template selection
-    const tpl = u.searchParams.get("tpl") || u.searchParams.get("template") || "";
-    if (!tpl) return new Response(JSON.stringify({ ok: false, error: "Missing tpl" }), { status: 400 });
+    // 1) Read payload from ?data=
+    const dataParam = u.searchParams.get("data") || "";
+    if (!dataParam) {
+      return new Response(JSON.stringify({ ok: false, error: "Missing data" }), { status: 400 });
+    }
 
-    // Payload is base64url JSON in ?data=... (MATCH Build V3)
-    const dataB64url = u.searchParams.get("data") || "";
-    if (!dataB64url) return new Response(JSON.stringify({ ok: false, error: "Missing data" }), { status: 400 });
-
-    let data = {};
-    try {
-      // base64url -> base64
-      const dataB64 = String(dataB64url)
-        .replace(/-/g, "+")
-        .replace(/_/g, "/")
-        .padEnd(Math.ceil(String(dataB64url).length / 4) * 4, "=");
-
-      const jsonStr = Buffer.from(dataB64, "base64").toString("utf8");
-      data = JSON.parse(jsonStr);
-    } catch (e) {
+    const data = decodeDataParam(dataParam);
+    if (!data) {
       return new Response(JSON.stringify({ ok: false, error: "Bad data JSON" }), { status: 400 });
     }
 
-    if (!data || typeof data !== "object" || Array.isArray(data)) {
-      return new Response(JSON.stringify({ ok: false, error: "Parsed data not an object" }), { status: 400 });
+    // 2) Template selection
+    // - New (coach-style): payload.tpl = "file.pdf"
+    // - Backwards compat: allow ?tpl= to override
+    const tplQuery = (u.searchParams.get("tpl") || u.searchParams.get("template") || "").trim();
+    const tplFromPayload = String(data?.tpl || "").trim();
+
+    if (!tplQuery && !tplFromPayload) {
+      return new Response(JSON.stringify({ ok: false, error: "Missing tpl (expected payload.tpl)" }), { status: 400 });
     }
 
-    // Load template (V3: with timeout)
-    const pdfBytes = await fetchPdfBytes(tpl);
+    // If tplQuery exists it may be absolute already; if not, treat payload tpl as filename.
+    // Coach-style behaviour: build absolute template URL from this same origin.
+    let tplUrl = "";
+
+    if (tplQuery) {
+      tplUrl = tplQuery;
+    } else {
+      const file = tplFromPayload.replace(/^\/+/, ""); // strip leading slashes
+      tplUrl = `${u.origin}/${file}`;
+    }
+
+    // 3) Load template
+    const pdfBytes = await fetchPdfBytes(tplUrl);
     const pdf = await PDFDocument.load(pdfBytes);
     const Helv = await pdf.embedFont(StandardFonts.Helvetica);
 
-    // Override layout via query params (kept as-is)
+    // 4) Override layout via query params (kept as-is)
     const POS = JSON.parse(JSON.stringify(DEFAULT_LAYOUT.p6));
 
     POS.why6 = {
@@ -355,9 +380,9 @@ export default async function handler(req) {
       h: qnum(url, "c6h", POS.chart6.h),
     };
 
-    // Pages
+    // 5) Pages
     const pages = pdf.getPages();
-    const page9 = pages[8]; // unchanged assumption from your baseline file :contentReference[oaicite:4]{index=4}
+    const page9 = pages[8]; // unchanged from your current file
 
     if (page9) {
       const why6Text = dropLeadingLabel(data?.why6 || data?.p6_why || "");
@@ -396,7 +421,8 @@ export default async function handler(req) {
         );
       }
 
-      // Chart image (V3: timeout inside embedRemoteImage)
+      // Chart image
+      // Prefer explicit URL if NOT radar; otherwise regenerate from ctrl12 bands.
       try {
         await embedRadarFromBandsOrUrl(
           pdf,
@@ -405,7 +431,9 @@ export default async function handler(req) {
           data,
           (data?.chartUrl || data?.spiderChartUrl || data?.spider?.chartUrl || "")
         );
-      } catch { /* ignore image failure */ }
+      } catch {
+        /* ignore image failure */
+      }
     }
 
     const outBytes = await pdf.save();
