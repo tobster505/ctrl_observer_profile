@@ -176,80 +176,96 @@ async function loadTemplateBytes(fullPath) {
   return await fs.readFile(fullPath);
 }
 
-/* ───────── DEFAULT LAYOUT (V6.2) ─────────
-   NOTE: These values are the Coach V5 layout translated for this file’s
-   bottom-origin drawTextBox/page.drawImage usage.
+/* ───────── DEFAULT LAYOUT (UPDATED to your latest top-origin coords) ─────────
+   IMPORTANT:
+   - These coordinate values are TOP-ORIGIN (your preferred style).
+   - We set `_yFromTop: true` on each updated box so drawTextBox/embedChart converts correctly.
 */
 const DEFAULT_LAYOUT = {
   pages: {
     // Page 1
     p1: {
-      name: { x: 60,  y: 324, w: 500, h: 60, size: 30, align: "center", maxLines: 1 },
-      date: { x: 230, y: 189, w: 500, h: 40, size: 25, align: "left",   maxLines: 1 }
+      name: { x: 60,  y: 430, w: 500, h: 60, size: 30, align: "center", maxLines: 1, _yFromTop: true },
+      date: { x: 230, y: 600, w: 500, h: 40, size: 25, align: "left",   maxLines: 1, _yFromTop: true }
     },
 
     // Headers p2–p8
-    p2: { hdrName: { x: 380, y: 767, w: 400, h: 24, size: 13, align: "left", maxLines: 1 } },
+    p2: { hdrName: { x: 380, y: 39, w: 400, h: 24, size: 13, align: "left", maxLines: 1, _yFromTop: true } },
+
     p3: {
-      hdrName: { x: 380, y: 767, w: 400, h: 24, size: 13, align: "left", maxLines: 1 },
+      hdrName: { x: 380, y: 39, w: 400, h: 24, size: 13, align: "left", maxLines: 1, _yFromTop: true },
+
       p3Text: {
-        exec1: { x: 25, y: 232, w: 550, h: 250, size: 14, align: "left", maxLines: 13 },
-        exec2: { x: 25, y: -98, w: 550, h: 420, size: 14, align: "left", maxLines: 22 }
+        exec1: { x: 25, y: 200, w: 620, h: 250, size: 15, align: "left", maxLines: 13, _yFromTop: true },
+        exec2: { x: 25, y: 160, w: 620, h: 420, size: 15, align: "left", maxLines: 22, _yFromTop: true }
       },
+
       p3Q: {
-        exec_q1: { x: 25, y: 172, w: 550, h: 40, size: 14, align: "left", maxLines: 2 },
-        exec_q2: { x: 25, y: 132, w: 550, h: 40, size: 14, align: "left", maxLines: 2 },
-        exec_q3: { x: 25, y:  92, w: 550, h: 40, size: 14, align: "left", maxLines: 2 },
-        exec_q4: { x: 25, y:  52, w: 550, h: 40, size: 14, align: "left", maxLines: 2 }
+        exec_q1: { x: 25, y: 620, w: 620, h: 30, size: 15, align: "left", maxLines: 2, _yFromTop: true },
+        exec_q2: { x: 25, y: 660, w: 620, h: 30, size: 15, align: "left", maxLines: 2, _yFromTop: true },
+        exec_q3: { x: 25, y: 700, w: 620, h: 30, size: 15, align: "left", maxLines: 2, _yFromTop: true },
+        exec_q4: { x: 25, y: 740, w: 620, h: 30, size: 15, align: "left", maxLines: 2, _yFromTop: true }
       }
     },
+
     p4: {
-      hdrName: { x: 380, y: 767, w: 400, h: 24, size: 13, align: "left", maxLines: 1 },
+      hdrName: { x: 380, y: 39, w: 400, h: 24, size: 13, align: "left", maxLines: 1, _yFromTop: true },
+
       p4Text: {
-        ov1:   { x: 25,  y: 442, w: 200, h: 240, size: 14, align: "left", maxLines: 25 },
-        ov2:   { x: 25,  y: -98, w: 550, h: 420, size: 14, align: "left", maxLines: 23 },
-        chart: { x: 250, y: 362, w: 320, h: 320 }
+        ov1:   { x: 25,  y: 5,   w: 200, h: 240, size: 15, align: "left", maxLines: 25, _yFromTop: true },
+        ov2:   { x: 25,  y: 150, w: 620, h: 420, size: 15, align: "left", maxLines: 23, _yFromTop: true },
+        chart: { x: 250, y: 160, w: 320, h: 320, _yFromTop: true }
       },
+
       p4Q: {
-        ov_q1: { x: 25, y: 152, w: 550, h: 40, size: 14, align: "left", maxLines: 2 },
-        ov_q2: { x: 25, y: 102, w: 550, h: 40, size: 14, align: "left", maxLines: 2 }
+        ov_q1: { x: 25, y: 650, w: 620, h: 40, size: 15, align: "left", maxLines: 2, _yFromTop: true },
+        ov_q2: { x: 25, y: 700, w: 620, h: 40, size: 15, align: "left", maxLines: 2, _yFromTop: true }
       }
     },
+
     p5: {
-      hdrName: { x: 380, y: 767, w: 400, h: 24, size: 13, align: "left", maxLines: 1 },
+      hdrName: { x: 380, y: 39, w: 400, h: 24, size: 13, align: "left", maxLines: 1, _yFromTop: true },
+
       p5Text: {
-        dd1: { x: 25, y: 462, w: 550, h: 240, size: 13, align: "left", maxLines: 13 },
-        dd2: { x: 25, y: 292, w: 550, h: 310, size: 13, align: "left", maxLines: 17 },
-        th1: { x: 25, y: 142, w: 550, h: 160, size: 13, align: "left", maxLines: 9  },
-        th2: { x: 25, y:  62, w: 550, h: 160, size: 13, align: "left", maxLines: 9  }
+        dd1: { x: 25, y: -70, w: 620, h: 240, size: 15, align: "left", maxLines: 13, _yFromTop: true },
+        dd2: { x: 25, y: -30, w: 620, h: 310, size: 15, align: "left", maxLines: 17, _yFromTop: true },
+        th1: { x: 25, y: 400, w: 620, h: 160, size: 15, align: "left", maxLines: 9,  _yFromTop: true },
+        th2: { x: 25, y: 480, w: 620, h: 160, size: 15, align: "left", maxLines: 9,  _yFromTop: true }
       },
+
       p5Q: {
-        dd_q1: { x: 25, y: 492, w: 550, h: 40, size: 13, align: "left", maxLines: 2 },
-        dd_q2: { x: 25, y: 452, w: 550, h: 40, size: 13, align: "left", maxLines: 2 },
-        th_q1: { x: 25, y:  92, w: 550, h: 40, size: 13, align: "left", maxLines: 2 },
-        th_q2: { x: 25, y:  52, w: 550, h: 40, size: 13, align: "left", maxLines: 2 }
+        dd_q1: { x: 25, y: 310, w: 620, h: 40, size: 15, align: "left", maxLines: 2, _yFromTop: true },
+        dd_q2: { x: 25, y: 340, w: 620, h: 40, size: 15, align: "left", maxLines: 2, _yFromTop: true },
+        th_q1: { x: 25, y: 680, w: 620, h: 40, size: 15, align: "left", maxLines: 2, _yFromTop: true },
+        th_q2: { x: 25, y: 720, w: 620, h: 40, size: 15, align: "left", maxLines: 2, _yFromTop: true }
       }
     },
+
     p6: {
-      hdrName: { x: 380, y: 767, w: 400, h: 24, size: 13, align: "left", maxLines: 1 },
+      hdrName: { x: 380, y: 39, w: 400, h: 24, size: 13, align: "left", maxLines: 1, _yFromTop: true },
+
       p6WorkWith: {
-        collabC: { x: 30,  y: 122, w: 270, h: 420, size: 14, align: "left", maxLines: 14 },
-        collabT: { x: 320, y: 122, w: 260, h: 420, size: 14, align: "left", maxLines: 14 }
+        collabC: { x: 30,  y: -80, w: 270, h: 420, size: 15, align: "left", maxLines: 14, _yFromTop: true },
+        collabT: { x: 320, y: -80, w: 260, h: 420, size: 15, align: "left", maxLines: 14, _yFromTop: true }
       },
+
       p6Q: {
-        col_q1:  { x: 30,  y: 252, w: 270, h: 40, size: 14, align: "left", maxLines: 2 },
-        lead_q1: { x: 320, y: 252, w: 260, h: 40, size: 14, align: "left", maxLines: 2 }
+        col_q1:  { x: 30,  y: 550, w: 270, h: 40, size: 15, align: "left", maxLines: 5, _yFromTop: true },
+        lead_q1: { x: 320, y: 550, w: 260, h: 40, size: 15, align: "left", maxLines: 5, _yFromTop: true }
       }
     },
+
     p7: {
-      hdrName: { x: 380, y: 767, w: 400, h: 24, size: 13, align: "left", maxLines: 1 },
+      hdrName: { x: 380, y: 39, w: 400, h: 24, size: 13, align: "left", maxLines: 1, _yFromTop: true },
+
       p7Actions: {
-        act1: { x: 50,  y: 367, w: 440, h: 95, size: 16, align: "left", maxLines: 5 },
-        act2: { x: 100, y: 217, w: 440, h: 95, size: 16, align: "left", maxLines: 5 },
-        act3: { x: 50,  y:  77, w: 440, h: 95, size: 16, align: "left", maxLines: 5 }
+        act1: { x: 50,  y: 330, w: 440, h: 95, size: 16, align: "left", maxLines: 5, _yFromTop: true },
+        act2: { x: 100, y: 470, w: 440, h: 95, size: 16, align: "left", maxLines: 5, _yFromTop: true },
+        act3: { x: 50,  y: 610, w: 440, h: 95, size: 16, align: "left", maxLines: 5, _yFromTop: true }
       }
     },
-    p8: { hdrName: { x: 380, y: 767, w: 400, h: 24, size: 13, align: "left", maxLines: 1 } }
+
+    p8: { hdrName: { x: 380, y: 39, w: 400, h: 24, size: 13, align: "left", maxLines: 1, _yFromTop: true } }
   }
 };
 
@@ -266,34 +282,33 @@ function applyLayoutOverridesFromUrl(layoutPages, url) {
   const applied = [];
   const ignored = [];
 
-const getOrCreateObj = (root, pathParts) => {
-  let cur = root;
+  const getOrCreateObj = (root, pathParts) => {
+    let cur = root;
 
-  for (let i = 0; i < pathParts.length; i++) {
-    const p = pathParts[i];
+    for (let i = 0; i < pathParts.length; i++) {
+      const p = pathParts[i];
 
-    // ── V6.3.1+ enhancement:
-    // If the layout already contains a key with an underscore (e.g. "exec_q1"),
-    // and the incoming path arrives split ("exec","q1"), auto-join it.
-    if (cur && typeof cur === "object" && i + 1 < pathParts.length) {
-      const joined = `${p}_${pathParts[i + 1]}`;
-      if (Object.prototype.hasOwnProperty.call(cur, joined)) {
-        // Jump over the next token because we consumed it.
-        i += 1;
+      // ── V6.3.1+ enhancement:
+      // If the layout already contains a key with an underscore (e.g. "exec_q1"),
+      // and the incoming path arrives split ("exec","q1"), auto-join it.
+      if (cur && typeof cur === "object" && i + 1 < pathParts.length) {
+        const joined = `${p}_${pathParts[i + 1]}`;
+        if (Object.prototype.hasOwnProperty.call(cur, joined)) {
+          // Jump over the next token because we consumed it.
+          i += 1;
 
-        if (!cur[joined] || typeof cur[joined] !== "object") cur[joined] = {};
-        cur = cur[joined];
-        continue;
+          if (!cur[joined] || typeof cur[joined] !== "object") cur[joined] = {};
+          cur = cur[joined];
+          continue;
+        }
       }
+
+      if (!cur[p] || typeof cur[p] !== "object") cur[p] = {};
+      cur = cur[p];
     }
 
-    if (!cur[p] || typeof cur[p] !== "object") cur[p] = {};
-    cur = cur[p];
-  }
-
-  return cur;
-};
-
+    return cur;
+  };
 
   for (const [k, rawVal] of params.entries()) {
     if (!k.startsWith("L_")) continue;
