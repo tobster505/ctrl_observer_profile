@@ -253,6 +253,54 @@ const defaultFileName = (fullName) => {
   return `CTRL_${who}_${String(d.getDate()).padStart(2,"0")}${MMM[d.getMonth()]}${d.getFullYear()}.pdf`;
 };
 
+// ───────────────────────────────────────────────────────────────
+// ADDITION (local-only): build a QuickChart URL from ctrl12 bands
+// (Used ONLY if no chartUrl/spiderChartUrl is provided in payload.)
+// ───────────────────────────────────────────────────────────────
+function quickChartUrlFromCtrl12(ctrl12) {
+  try {
+    const keys = [
+      "C_low","C_mid","C_high",
+      "T_low","T_mid","T_high",
+      "R_low","R_mid","R_high",
+      "L_low","L_mid","L_high"
+    ];
+    const valsRaw = keys.map(k => (Number.isFinite(+ctrl12?.[k]) ? +ctrl12[k] : 0));
+    const maxVal = Math.max(0.0001, ...valsRaw);
+    const vals = valsRaw.map(v => +(v / maxVal).toFixed(4));
+
+    const cfg = {
+      type: "radar",
+      data: {
+        labels: keys.map(k => k.replace("_", "·")),
+        datasets: [{
+          data: vals,
+          fill: true,
+          borderWidth: 2,
+          pointRadius: 0
+        }]
+      },
+      options: {
+        plugins: { legend: { display: false } },
+        scales: {
+          r: {
+            suggestedMin: 0,
+            suggestedMax: 1,
+            ticks: { display: false },
+            pointLabels: { display: false },
+            grid: { circular: true }
+          }
+        }
+      }
+    };
+
+    const c = encodeURIComponent(JSON.stringify(cfg));
+    return `https://quickchart.io/chart?c=${c}&w=900&h=650&bkg=transparent&format=png`;
+  } catch {
+    return "";
+  }
+}
+
 /* ───────────────────────── main handler ───────────────────────── */
 export default async function handler(req, res) {
   let url;
@@ -447,8 +495,18 @@ export default async function handler(req, res) {
         );
       }
 
-      // Chart image (png) if provided
-      const chartURL = S(data?.chartUrl || data?.spiderChartUrl || data?.spider?.chartUrl || "", "");
+      // Chart image (png) if provided (OR generate from ctrl.bands if missing)
+      let chartURL = S(data?.chartUrl || data?.spiderChartUrl || data?.spider?.chartUrl || "", "");
+
+      if (!chartURL) {
+        const bands = data?.ctrl?.bands || data?.ctrl?.summary?.ctrl12 || data?.ctrl12 || null;
+        const has12 =
+          bands &&
+          ["C_low","C_mid","C_high","T_low","T_mid","T_high","R_low","R_mid","R_high","L_low","L_mid","L_high"]
+            .every(k => bands[k] != null);
+        if (has12) chartURL = quickChartUrlFromCtrl12(bands);
+      }
+
       if (chartURL) {
         try {
           const r = await fetch(chartURL);
