@@ -128,19 +128,78 @@ function pickCtrl12Bands(payload){
 }
 
 function makeSpiderChartUrl12(ctrl12Bands, opts = {}) {
-  const width  = Math.max(300, Math.min(2000, N(opts.width, 900)));
-  const height = Math.max(300, Math.min(2000, N(opts.height, 900)));
+  const width  = Math.max(300, Math.min(2000, N(opts.width, 1200)));
+  const height = Math.max(300, Math.min(2000, N(opts.height, 1200)));
+
+  const keys = CTRL12_ORDER;
+
+  // Show state names once per triad
+  const displayLabels = [
+    "", "Concealed", "",
+    "", "Triggered", "",
+    "", "Regulated", "",
+    "", "Lead", ""
+  ];
 
   const b = ctrl12Bands || {};
-  const vals = CTRL12_ORDER.map(k => Math.max(0, N(b[k], 0)));
+  const vals = keys.map((k) => Math.max(0, Number(b?.[k] || 0)));
 
-  // Map 12 bands -> 4 primary states (average of 3 bands each)
-  const stateVals = [
-    (vals[0] + vals[1] + vals[2]) / 3,     // Concealed
-    (vals[3] + vals[4] + vals[5]) / 3,     // Triggered
-    (vals[6] + vals[7] + vals[8]) / 3,     // Regulated
-    (vals[9] + vals[10] + vals[11]) / 3    // Lead
-  ];
+  // Normalise to 0..1 based on max band (keeps visual stable)
+  const maxVal = Math.max(...vals, 1);
+  const data = vals.map((v) => (maxVal > 0 ? v / maxVal : 0));
+
+  const CTRL_COLOURS = {
+    C: { low: "rgba(230, 228, 225, 0.55)", mid: "rgba(184, 180, 174, 0.55)", high: "rgba(110, 106, 100, 0.55)" },
+    T: { low: "rgba(244, 225, 198, 0.55)", mid: "rgba(211, 155,  74, 0.55)", high: "rgba(154,  94,  26, 0.55)" },
+    R: { low: "rgba(226, 236, 230, 0.55)", mid: "rgba(143, 183, 161, 0.55)", high: "rgba( 79, 127, 105, 0.55)" },
+    L: { low: "rgba(230, 220, 227, 0.55)", mid: "rgba(164, 135, 159, 0.55)", high: "rgba( 94,  63,  90, 0.55)" },
+  };
+
+  const colours = keys.map((k) => {
+    const state = k[0];              // C/T/R/L
+    const tier = k.split("_")[1];    // low/mid/high
+    return CTRL_COLOURS?.[state]?.[tier] || "rgba(0,0,0,0.10)";
+  });
+
+  const startAngle = -Math.PI / 4;
+
+  const cfg = {
+    type: "polarArea",
+    data: {
+      labels: displayLabels,
+      datasets: [{
+        data,
+        backgroundColor: colours,
+        borderWidth: 3,
+        borderColor: "rgba(0, 0, 0, 0.20)",
+      }],
+    },
+    options: {
+      plugins: { legend: { display: false } },
+      startAngle,
+      scales: {
+        r: {
+          min: 0,
+          max: 1,
+          ticks: { display: false },
+          grid: { display: true },
+          angleLines: { display: false },
+          pointLabels: {
+            display: true,
+            padding: 14,
+            font: { size: 26, weight: "bold" },
+          },
+        },
+      },
+    },
+  };
+
+  const enc = encodeURIComponent(JSON.stringify(cfg));
+
+  // IMPORTANT: force Chart.js v4 so scales.r + pointLabels render correctly
+  return `https://quickchart.io/chart?c=${enc}&format=png&backgroundColor=white&width=${width}&height=${height}&v=4`;
+}
+
 
   // Clamp to 0..1 for stable rendering
   const clamp01 = (x) => Math.max(0, Math.min(1, x));
