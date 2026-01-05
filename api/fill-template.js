@@ -1,11 +1,12 @@
 /**
- * CTRL Observer Export Service · fill-template (OBSERVER 180 V6.2)
+ * CTRL Observer Export Service · fill-template (OBSERVER 180 V6.3)
  *
- * V6.2 changes (ONLY):
- * - DEFAULT_LAYOUT updated to match the Coach V5 coordinate layout,
- *   converted for this file's bottom-origin drawing logic.
+ * V6.3 changes (ONLY):
+ * - Implement URL-driven layout overrides via &L_... params
+ * - Support top-origin y coords from URL (default), with optional &L_origin=bottom
+ * - Apply y conversion in drawTextBox and embedChartIfPresent when _yFromTop is set
  *
- * Base: OBSERVER 180 V6.1 (working)
+ * Base: OBSERVER 180 V6.2 (working)
  */
 
 export const config = { runtime: "nodejs" };
@@ -252,9 +253,81 @@ const DEFAULT_LAYOUT = {
   }
 };
 
-/* ───────── layout override hook (kept) ───────── */
+/* ───────── layout override hook (UPDATED V6.3) ───────── */
 function applyLayoutOverridesFromUrl(layoutPages, url) {
-  return { layout: layoutPages, applied: [], ignored: [] };
+  const params = url.searchParams;
+
+  // Default: URL y-values are FROM TOP (matches your working coordinate style)
+  // Optional: &L_origin=bottom to treat URL y-values as bottom-origin.
+  const origin = (params.get("L_origin") || "top").toLowerCase(); // "top" | "bottom"
+  const useTopOrigin = origin !== "bottom";
+
+  const allowedProps = new Set(["x", "y", "w", "h", "size", "align", "maxLines"]);
+  const applied = [];
+  const ignored = [];
+
+  const getOrCreateObj = (root, pathParts) => {
+    let cur = root;
+    for (const p of pathParts) {
+      if (!cur[p] || typeof cur[p] !== "object") cur[p] = {};
+      cur = cur[p];
+    }
+    return cur;
+  };
+
+  for (const [k, rawVal] of params.entries()) {
+    if (!k.startsWith("L_")) continue;
+
+    const key = k.slice(2); // remove "L_"
+    const parts = key.split("_");
+
+    if (parts.length < 2) {
+      ignored.push({ key: k, reason: "Too few parts" });
+      continue;
+    }
+
+    const prop = parts[parts.length - 1];
+    if (!allowedProps.has(prop)) {
+      ignored.push({ key: k, reason: `Unknown prop: ${prop}` });
+      continue;
+    }
+
+    const pathParts = parts.slice(0, -1);
+    const target = getOrCreateObj(layoutPages, pathParts);
+
+    let v = rawVal;
+
+    if (prop === "x" || prop === "y" || prop === "w" || prop === "h" || prop === "size" || prop === "maxLines") {
+      const num = Number(rawVal);
+      if (!Number.isFinite(num)) {
+        ignored.push({ key: k, reason: `Not a number: ${rawVal}` });
+        continue;
+      }
+      v = num;
+    } else if (prop === "align") {
+      const a = String(rawVal).toLowerCase();
+      if (!["left", "center", "right"].includes(a)) {
+        ignored.push({ key: k, reason: `Bad align: ${rawVal}` });
+        continue;
+      }
+      v = a;
+    }
+
+    target[prop] = v;
+
+    // Mark y-origin mode when overridden via URL
+    if (prop === "y") target._yFromTop = useTopOrigin;
+
+    applied.push({
+      key: k,
+      path: pathParts.join("."),
+      prop,
+      value: v,
+      yFromTop: prop === "y" ? useTopOrigin : undefined
+    });
+  }
+
+  return { layout: layoutPages, applied, ignored, origin: useTopOrigin ? "top" : "bottom" };
 }
 
 /* ───────── simple wrapper drawer ───────── */
@@ -286,7 +359,14 @@ function drawTextBox(page, font, text, box, opts = {}) {
   const lines = splitLinesToFit(S(text), maxChars).slice(0, maxLines);
   const lh = size + 2;
 
+  // V6.3: support top-origin y overrides
   let y = N(box.y, 0);
+  if (box._yFromTop) {
+    const pageH = page.getHeight();
+    const h = N(box.h, 0);
+    y = pageH - y - h;
+  }
+
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     let x = N(box.x, 0);
@@ -432,7 +512,19 @@ async function embedChartIfPresent(pdfDoc, page, box, chartUrl) {
   if (!chartUrl) return;
   const imgBytes = await fetchWithTimeout(chartUrl, 6500);
   const img = await pdfDoc.embedPng(imgBytes);
-  page.drawImage(img, { x: box.x, y: box.y, width: box.w, height: box.h });
+
+  // V6.3: support top-origin y overrides
+  let x = N(box.x, 0);
+  let y = N(box.y, 0);
+  const w = N(box.w, 0);
+  const h = N(box.h, 0);
+
+  if (box._yFromTop) {
+    const pageH = page.getHeight();
+    y = pageH - y - h;
+  }
+
+  page.drawImage(img, { x, y, width: w, height: h });
 }
 
 /* ───────── debug probe ───────── */
@@ -447,7 +539,8 @@ function buildProbe(P, domSecond, tplInfo, ov, templateInventory) {
     chart: { hasChartUrl: !!P.chartUrl, chartUrl: P.chartUrl ? P.chartUrl.slice(0, 140) : "" },
     layoutOverrides: {
       appliedCount: ov?.applied?.length || 0,
-      ignoredCount: ov?.ignored?.length || 0
+      ignoredCount: ov?.ignored?.length || 0,
+      origin: ov?.origin || null
     },
     templateInventory: safeJson(templateInventory)
   };
