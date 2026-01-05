@@ -290,19 +290,38 @@ export default async function handler(req) {
       tpl = `${u.origin}${path}`;
     }
 
-    // Payload is base64 JSON in ?data=
-    const dataB64 = u.searchParams.get("data") || "";
-    if (!dataB64) {
-      return new Response(JSON.stringify({ ok: false, error: "Missing data" }), { status: 400 });
-    }
+// Payload is base64url JSON in ?data=
+const dataB64url = u.searchParams.get("data") || "";
+if (!dataB64url) {
+  return new Response(JSON.stringify({ ok: false, error: "Missing data" }), { status: 400 });
+}
 
-    let data = {};
-    try {
-      const jsonStr = Buffer.from(dataB64, "base64").toString("utf8");
-      data = JSON.parse(jsonStr);
-    } catch (e) {
-      return new Response(JSON.stringify({ ok: false, error: "Bad data JSON" }), { status: 400 });
-    }
+let data = {};
+try {
+  // base64url -> base64
+  const dataB64 = dataB64url
+    .replace(/-/g, "+")
+    .replace(/_/g, "/")
+    .padEnd(Math.ceil(dataB64url.length / 4) * 4, "=");
+
+  const jsonStr = Buffer.from(dataB64, "base64").toString("utf8");
+  data = JSON.parse(jsonStr);
+} catch (e) {
+  return new Response(JSON.stringify({ ok: false, error: "Bad data JSON" }), { status: 400 });
+}
+
+// sanity checks
+if (!data || typeof data !== "object" || Array.isArray(data)) {
+  return new Response(JSON.stringify({ ok: false, error: "Parsed data not an object" }), { status: 400 });
+}
+
+// optional: size probe (helps debug “hanging” / huge URLs)
+const payloadBytes = Buffer.byteLength(JSON.stringify(data), "utf8");
+if (payloadBytes > 800000) { // ~0.8MB JSON is massive for a query string
+  return new Response(JSON.stringify({ ok: false, error: "Payload too large for query string" }), { status: 413 });
+}
+
+
 
     // Load template
     const pdfBytes = await fetchPdfBytes(tpl);
