@@ -266,14 +266,34 @@ function applyLayoutOverridesFromUrl(layoutPages, url) {
   const applied = [];
   const ignored = [];
 
-  const getOrCreateObj = (root, pathParts) => {
-    let cur = root;
-    for (const p of pathParts) {
-      if (!cur[p] || typeof cur[p] !== "object") cur[p] = {};
-      cur = cur[p];
+const getOrCreateObj = (root, pathParts) => {
+  let cur = root;
+
+  for (let i = 0; i < pathParts.length; i++) {
+    const p = pathParts[i];
+
+    // ── V6.3.1+ enhancement:
+    // If the layout already contains a key with an underscore (e.g. "exec_q1"),
+    // and the incoming path arrives split ("exec","q1"), auto-join it.
+    if (cur && typeof cur === "object" && i + 1 < pathParts.length) {
+      const joined = `${p}_${pathParts[i + 1]}`;
+      if (Object.prototype.hasOwnProperty.call(cur, joined)) {
+        // Jump over the next token because we consumed it.
+        i += 1;
+
+        if (!cur[joined] || typeof cur[joined] !== "object") cur[joined] = {};
+        cur = cur[joined];
+        continue;
+      }
     }
-    return cur;
-  };
+
+    if (!cur[p] || typeof cur[p] !== "object") cur[p] = {};
+    cur = cur[p];
+  }
+
+  return cur;
+};
+
 
   for (const [k, rawVal] of params.entries()) {
     if (!k.startsWith("L_")) continue;
